@@ -528,9 +528,10 @@ def watch(
                 try:
                     if action == "Not Interested":
                         existing = store.get_application(lid)
-                        app_row = (existing or Application(listing_id=lid)).model_copy(
-                            update={"status": "not_interested"}
-                        )
+                        update = {"status": "not_interested"}
+                        if item.get("notes"):
+                            update["notes"] = item["notes"]
+                        app_row = (existing or Application(listing_id=lid)).model_copy(update=update)
                         store.upsert_application(app_row)
                         ns.reset_action(page_id)
                         ns.archive_page(page_id)

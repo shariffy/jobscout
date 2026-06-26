@@ -189,10 +189,13 @@ class NotionSync:
             action_sel = props.get("Action", {}).get("select")
             db_id = props.get("DB ID", {}).get("number")
             if action_sel and db_id is not None:
+                notes_rt = props.get("Notes", {}).get("rich_text", [])
+                notes = notes_rt[0]["text"]["content"] if notes_rt else ""
                 pending.append({
                     "page_id": page["id"],
                     "listing_id": int(db_id),
                     "action": action_sel["name"],
+                    "notes": notes,
                 })
         return pending
 
