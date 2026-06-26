@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Test Job Feed</title>
+    <link>https://feed.example.com</link>
+    <description>Job listings RSS feed</description>
+    <item>
+      <title>Engineering Manager, Platform</title>
+      <link>https://feed.example.com/jobs/1</link>
+      <author>TechCo</author>
+      <description>Lead a team of 8 engineers building our core platform.</description>
+      <guid>https://feed.example.com/jobs/1</guid>
+    </item>
+    <item>
+      <title>Senior Backend Developer</title>
+      <link>https://feed.example.com/jobs/2</link>
+      <author>StartupXYZ</author>
+      <description>Python/FastAPI, event-driven architecture, remote-first.</description>
+      <guid>https://feed.example.com/jobs/2</guid>
+    </item>
+    <item>
+      <!-- malformed: no link, should be skipped -->
+      <title>Orphan Role</title>
+      <guid>no-link-here</guid>
+    </item>
+  </channel>
+</rss>

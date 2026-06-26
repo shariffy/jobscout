@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+<head><title>Example Job Board</title></head>
+<body>
+  <div class="job-card">
+    <h2 class="job-title">Senior Python Engineer</h2>
+    <span class="company">Widgets Ltd</span>
+    <span class="location">London / Remote</span>
+    <a class="job-link" href="/jobs/101">View Job</a>
+    <div class="description">We are building the best widget platform. You will own the backend.</div>
+  </div>
+  <div class="job-card">
+    <h2 class="job-title">Staff Engineer</h2>
+    <span class="company">Acme Corp</span>
+    <span class="location">Remote</span>
+    <a class="job-link" href="https://acme.example.com/jobs/42">View Job</a>
+    <div class="description">Lead our platform engineering team.</div>
+  </div>
+  <div class="job-card">
+    <!-- malformed: no title, should be skipped -->
+    <span class="company">Mystery Co</span>
+    <a class="job-link" href="/jobs/999">View</a>
+  </div>
+</body>
+</html>

@@ -1,0 +1,63 @@
+# copy to config.toml and fill in your values — config.toml is git-ignored
+
+[profile]
+cv_path = "cv.pdf"          # path to your CV (PDF or .md)
+goals = """
+I'm looking for a senior software engineering role in a product company.
+I care about good engineering culture, autonomy, and interesting technical problems.
+Dealbreakers: no fully-remote options, consulting/agency work, pure infra/SRE.
+Nice-to-haves: Python or TypeScript stack, series B+ startup or established tech company.
+"""
+
+[ai]
+anthropic_api_key = ""      # or set ANTHROPIC_API_KEY env var
+bulk_model = "claude-haiku-4-5"
+deep_model = "claude-sonnet-4-6"
+prep_model = "claude-sonnet-4-6"
+fit_threshold = 70          # push to Notion when fit >= this
+
+[notion]
+token = ""                  # your Notion integration token
+database_id = ""            # the board database ID (created by `find-a-job init`)
+
+[store]
+db_path = "findajob.db"
+
+# --- sources ---
+# Each [[sources]] entry defines one job board / feed to scrape.
+# type = "http" | "feed" | "browser"
+
+[[sources]]
+name = "Hacker News Who's Hiring"
+type = "feed"
+url = "https://hnrss.org/whoishiring"
+enabled = true
+
+[[sources]]
+name = "Example HTTP board"
+type = "http"
+url = "https://example.com/jobs"
+enabled = false
+# CSS selectors for the listing container and fields
+selectors.container = "div.job-card"
+selectors.title = "h2.job-title"
+selectors.company = "span.company"
+selectors.location = "span.location"
+selectors.url = "a.job-link"
+selectors.description = "div.description"
+
+[[sources]]
+name = "Example login-required board"
+type = "browser"
+url = "https://example.com/jobs"
+enabled = false
+login_url = "https://example.com/login"
+# credentials from env vars to avoid storing in config
+username_env = "EXAMPLE_USERNAME"
+password_env = "EXAMPLE_PASSWORD"
+selectors.container = "div.job-card"
+selectors.title = "h2.title"
+selectors.company = "span.company"
+selectors.location = "span.location"
+selectors.url = "a[href]"
+selectors.description = "div.body"
