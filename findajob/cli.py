@@ -438,6 +438,134 @@ def rescore(
 
 
 @app.command()
+def dismiss(
+    listing_ids: list[int] = typer.Argument(..., help="Listing IDs to dismiss (from find-a-job list)"),
+    config: Optional[str] = _CONFIG_OPT,
+) -> None:
+    """Mark listings as not interested — hides them from future shortlists."""
+    from .models import Application
+
+    cfg = _load(config)
+    ns = None
+    if cfg.notion.token and cfg.notion.database_id:
+        from .notion_sync import NotionSync
+        ns = NotionSync(token=cfg.notion.token, database_id=cfg.notion.database_id)
+
+    with Store(cfg.store.db_path) as store:
+        for lid in listing_ids:
+            listing = store.get_listing(lid)
+            if not listing:
+                console.print(f"[red]No listing {lid}[/]")
+                continue
+
+            existing = store.get_application(lid)
+            app_row = (existing or Application(listing_id=lid)).model_copy(
+                update={"status": "not_interested"}
+            )
+            store.upsert_application(app_row)
+
+            if ns and app_row.notion_page_id:
+                try:
+                    ns.archive_page(app_row.notion_page_id)
+                    console.print(f"  [dim]✓ archived in Notion[/]")
+                except Exception as exc:
+                    console.print(f"  [yellow]Notion archive failed:[/] {exc}")
+
+            console.print(f"  [dim]✗[/] {listing.title} @ {listing.company} — dismissed")
+
+
+@app.command()
+def watch(
+    interval: int = typer.Option(60, "--interval", "-i", help="Poll interval in seconds"),
+    config: Optional[str] = _CONFIG_OPT,
+) -> None:
+    """Poll the Notion board for pending actions and execute them."""
+    import time
+    import httpx as _httpx
+    from bs4 import BeautifulSoup as _BS
+    from .models import Application
+    from .notion_sync import NotionSync
+    from .profile import build_profile
+    from .scoring import BulkScorer
+    from .sources.http_source import _extract_jd
+
+    cfg = _load(config)
+    ns = _notion(cfg)
+
+    console.print(f"[bold]Watching Notion board[/] (every {interval}s) — Ctrl+C to stop\n")
+
+    # Patch schema to ensure "Not Interested" option exists
+    try:
+        ns.update_schema()
+    except Exception:
+        pass
+
+    _ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+    while True:
+        try:
+            pending = ns.get_pending_actions()
+        except Exception as exc:
+            console.print(f"[yellow]Poll error:[/] {exc}")
+            time.sleep(interval)
+            continue
+
+        if pending:
+            console.print(f"[bold]{len(pending)} pending action(s)[/]")
+
+        with Store(cfg.store.db_path) as store:
+            for item in pending:
+                page_id = item["page_id"]
+                lid = item["listing_id"]
+                action = item["action"]
+                listing = store.get_listing(lid)
+                if not listing:
+                    ns.reset_action(page_id)
+                    continue
+
+                console.print(f"  [{action}] {listing.title} @ {listing.company}")
+
+                try:
+                    if action == "Not Interested":
+                        existing = store.get_application(lid)
+                        app_row = (existing or Application(listing_id=lid)).model_copy(
+                            update={"status": "not_interested"}
+                        )
+                        store.upsert_application(app_row)
+                        ns.reset_action(page_id)
+                        ns.archive_page(page_id)
+                        console.print(f"    [dim]dismissed + archived[/]")
+
+                    elif action == "Rescore":
+                        profile_obj = build_profile(cfg)
+                        scorer = BulkScorer(cfg, profile_obj)
+                        try:
+                            resp = _httpx.get(listing.url, headers={"User-Agent": _ua}, follow_redirects=True, timeout=20)
+                            jd = _extract_jd(_BS(resp.text, "html.parser"))
+                            if jd and len(jd) > len(listing.description or ""):
+                                listing = listing.model_copy(update={"description": jd})
+                        except Exception:
+                            pass
+                        store.conn.execute("DELETE FROM scores WHERE listing_id = ?", (lid,))
+                        store.conn.commit()
+                        score = scorer.score(listing)
+                        store.insert_score(score)
+                        ns._patch(f"/pages/{page_id}", {"properties": {"Fit": {"number": score.fit_score}}})
+                        ns.reset_action(page_id)
+                        console.print(f"    [dim]rescored → {score.fit_score}[/]")
+
+                    else:
+                        # Unknown action — clear it
+                        ns.reset_action(page_id)
+
+                except Exception as exc:
+                    console.print(f"    [red]error:[/] {exc}")
+                    ns.reset_action(page_id)
+
+        time.sleep(interval)
+
+
+@app.command()
 def chase(
     config: Optional[str] = _CONFIG_OPT,
 ) -> None:

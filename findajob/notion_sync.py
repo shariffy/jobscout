@@ -18,6 +18,7 @@ _STATUS_COLORS = {
     "offer": "green",
     "rejected": "red",
     "withdrawn": "gray",
+    "not_interested": "default",
 }
 
 _DB_PROPERTIES = {
@@ -43,6 +44,7 @@ _DB_PROPERTIES = {
                 {"name": "Rescore", "color": "blue"},
                 {"name": "Prep", "color": "purple"},
                 {"name": "Apply", "color": "green"},
+                {"name": "Not Interested", "color": "red"},
             ]
         }
     },
@@ -166,6 +168,13 @@ class NotionSync:
         if contacts:
             props["Contacts"] = {"rich_text": _rt(contacts)}
         self._patch(f"/pages/{page_id}", {"properties": props})
+
+    def archive_page(self, page_id: str) -> None:
+        self._patch(f"/pages/{page_id}", {"archived": True})
+
+    def update_schema(self) -> None:
+        """Patch the existing database to add any missing properties/options."""
+        self._patch(f"/databases/{self.database_id}", {"properties": _DB_PROPERTIES})
 
     def reset_action(self, page_id: str) -> None:
         self._patch(f"/pages/{page_id}", {"properties": {"Action": {"select": None}}})
