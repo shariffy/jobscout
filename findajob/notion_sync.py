@@ -199,6 +199,34 @@ class NotionSync:
                 })
         return pending
 
+    def update_score_callout(self, page_id: str, score: "Score") -> None:
+        """Update the 🤖 callout block on an existing page with the latest score."""
+        children = self._get(f"/blocks/{page_id}/children").get("results", [])
+        callout_id = next(
+            (b["id"] for b in children if b.get("type") == "callout"),
+            None,
+        )
+        text = f"Fit {score.fit_score}/100 — {score.rationale}"
+        if callout_id:
+            self._patch(f"/blocks/{callout_id}", {
+                "callout": {
+                    "rich_text": _rt(text, 2000),
+                    "icon": {"type": "emoji", "emoji": "🤖"},
+                },
+            })
+        else:
+            # No callout yet — append one
+            self._patch(f"/blocks/{page_id}/children", {
+                "children": [{
+                    "object": "block",
+                    "type": "callout",
+                    "callout": {
+                        "icon": {"type": "emoji", "emoji": "🤖"},
+                        "rich_text": _rt(text, 2000),
+                    },
+                }]
+            })
+
     def append_prep_content(self, page_id: str, content: str) -> None:
         self._patch(f"/blocks/{page_id}/children", {
             "children": [

@@ -446,12 +446,11 @@ def rescore(
             if app_row and app_row.notion_page_id and ns:
                 try:
                     from typing import Any
-                    props: dict[str, Any] = {
-                        "Fit": {"number": score.fit_score},
-                    }
+                    props: dict[str, Any] = {"Fit": {"number": score.fit_score}}
                     if score.flags:
                         props["Flags"] = {"rich_text": [{"text": {"content": ", ".join(score.flags)[:2000]}}]}
                     ns._patch(f"/pages/{app_row.notion_page_id}", {"properties": props})
+                    ns.update_score_callout(app_row.notion_page_id, score)
                     console.print(f"       [dim]Notion updated.[/]")
                 except Exception as exc:
                     console.print(f"       [yellow]Notion update failed: {exc}[/]")
@@ -572,6 +571,7 @@ def watch(
                         score = scorer.score(listing)
                         store.insert_score(score)
                         ns._patch(f"/pages/{page_id}", {"properties": {"Fit": {"number": score.fit_score}}})
+                        ns.update_score_callout(page_id, score)
                         ns.reset_action(page_id)
                         console.print(f"    [dim]rescored → {score.fit_score}[/]")
 
