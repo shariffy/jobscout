@@ -441,9 +441,9 @@ def rescore(
                 console.print(f"  [red]error scoring {lid}:[/] {exc}")
                 continue
 
-            # Update Notion page if linked
+            # Update Notion page if linked and not dismissed
             app_row = store.get_application(lid)
-            if app_row and app_row.notion_page_id and ns:
+            if app_row and app_row.notion_page_id and ns and app_row.status != "not_interested":
                 try:
                     from typing import Any
                     props: dict[str, Any] = {"Fit": {"number": score.fit_score}}

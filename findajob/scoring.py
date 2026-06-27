@@ -16,13 +16,13 @@ Return ONLY a JSON object — no markdown, no prose — exactly:
   "fit_score": <integer 0-100>,
   "breakdown": {{
     "title": <+5 to +20 — +18-20: exact preferred title; +12-17: close variant (e.g. Head vs Director); +5-11: weaker match (EM when Director preferred)>,
-    "scope": <+5 to +20 — +18-20: full strategic autonomy, hands-on expected, first/senior eng leader; +12-17: mostly strategic, some autonomy gaps; +5-11: limited scope or IC-only>,
+    "scope": <+5 to +20 — +18-20: full strategic autonomy, hands-on expected, first/senior eng leader at a small/mid-size company; +12-17: mostly strategic, some autonomy gaps; +5-11: limited scope or IC-only; score 0 to +8 if the role expects managing a global or multi-region engineering org, or is effectively CTO-level responsibility across multiple countries — that is over-scoped for this candidate>,
     "company": <+5 to +15 — +13-15: ideal size/stage/type (product, Series A-C, <200 people); +8-12: decent fit with minor gaps; +5-7: wrong size or stage>,
-    "stack": <0 to +10 — +9-10: exact stack match (same technologies named explicitly); +6-8: strong overlap (3+ of candidate's core techs); +3-5: partial overlap (1-2 techs); +1-2: different stack but transferable; 0: no overlap or specialist tech required>,
-    "domain": <-10 to 0 — 0: preferred domain (music, media, dev tools) OR any neutral product/SaaS domain where a generalist engineering leader succeeds without specialist knowledge (B2B SaaS, analytics, productivity, HR software, CMS, marketplace, e-commerce, developer infrastructure — default to 0 unless there is a specific reason not to); -3 to -5: domain the candidate has reason to avoid or that requires real specialist adaptation (fintech/banking/financial services, insurance, healthcare/medtech, legaltech, physical sciences — apply -5 for these); -6 to -10: hard specialist knowledge the candidate clearly lacks (quant trading algorithms, hardware/embedded firmware, medical device certification)>,
+    "stack": <0 to +10 — +9-10: exact stack match (same technologies named explicitly); +6-8: strong overlap (3+ of candidate's core techs); +3-5: partial overlap (1-2 techs); +1-2: different stack but transferable; 0: no overlap. If the JD lists a specific language or framework as a hard requirement (not just a preference) and it is absent from the candidate's skills (e.g. Java, Go, Rust, C++, Python ML, heavy Kubernetes), cap stack at +3 and flag stack-mismatch-required regardless of other overlap>,
+    "domain": <-10 to 0 — 0: preferred domain (music, media, dev tools) OR any neutral product/SaaS domain where a generalist engineering leader succeeds without specialist knowledge (B2B SaaS, analytics, productivity, HR software, CMS, marketplace, e-commerce, developer infrastructure — default to 0 unless there is a specific reason not to); -3 to -5: domain the candidate has reason to avoid or that requires real specialist adaptation (fintech/banking/financial services, insurance, healthcare/medtech, legaltech, physical sciences — apply -5 for these); -8 to -10: the JD explicitly gates on domain experience the candidate lacks ("must have fintech experience", "strong data engineering background required", "AI/ML domain expertise essential") — apply -8 to -10 for these>,
     "salary": <-3 to 0 — 0: salary stated and above threshold; -3: not stated (norm in UK — apply exactly -3); -20: stated below threshold>,
     "office": <-3 to 0 — 0: remote or hybrid clearly under 3 days; -3: minimum 3 days (borderline); -20: 4+ days or fully in-office confirmed>,
-    "dealbreakers": <-50 to 0 — 0: none triggered; -50: hard dealbreaker confirmed (agency, managing-managers at scale, sponsorship needed, banned industry)>
+    "dealbreakers": <-50 to 0 — 0: none triggered; -50: hard dealbreaker confirmed (agency, managing-managers at scale, sponsorship needed, banned industry, Java required, data engineering / data platform role, ML infrastructure role, forward deployed engineering role)>
   }},
   "rationale": "<2-3 sentences explaining the score>",
   "flags": ["<short tag>", ...]
@@ -66,6 +66,25 @@ Org scale:
 - Only flag dealbreaker-managing-managers if the JD explicitly names managers, EMs, or team leads as
   direct reports, or uses phrases like "lead through other leaders", "manage engineering managers",
   or "multiple teams through managers". The bar for this flag should be high.
+- If the role expects managing a global or multi-region engineering org (teams across multiple
+  countries, international headcount responsibility) or is CTO-level at a company where the candidate
+  would be the most senior technical person across countries, flag scope-over-scoped and score scope
+  at 0 to +8, not higher.
+
+Dealbreakers — hard stops that score dealbreakers: -50:
+- Java required as the primary backend language (the candidate does not know Java).
+- Data engineering, data platform, or analytics engineering as the core role focus — not incidental
+  data work but the primary technical domain.
+- ML infrastructure or ML platform engineering roles — building/running training pipelines, model
+  serving, or MLOps infrastructure.
+- Forward Deployed Engineering or Customer Engineering roles where the primary work is deploying or
+  customising the product at customer sites.
+
+Tech stack mismatch:
+- If the JD hard-requires a language or framework absent from the candidate's skills and central
+  to the role (Java backend, Go services, C++ systems, Python ML, Kubernetes-only infra), cap
+  stack at +3 and flag stack-mismatch-required. Do not treat "experience with X is a plus" as a
+  hard requirement.
 
 Domain:
 - Do not score against a fixed whitelist of preferred domains. Instead assess adaptability: could an
@@ -84,12 +103,14 @@ Salary:
 
 Flag vocabulary (use what fits, invent concise ones for anything unusual):
   dealbreaker-agency, dealbreaker-salary, dealbreaker-office, dealbreaker-sponsorship, dealbreaker-industry
-  dealbreaker-managing-managers
+  dealbreaker-managing-managers, dealbreaker-java, dealbreaker-data-engineering, dealbreaker-ml-infra
+  dealbreaker-forward-deployed
   title-strong, title-weak, title-mismatch
   salary-above-threshold, salary-below-threshold, salary-not-stated
   company-well-known, company-size-ok, company-too-large
   hybrid-ok, hybrid-borderline, office-heavy, remote-only
-  domain-match, stack-match, scope-strategic, scope-ic-only, hands-on-expected
+  domain-match, domain-gated, stack-match, stack-mismatch-required, scope-strategic, scope-ic-only
+  scope-over-scoped, hands-on-expected
 
 ## Candidate Profile
 
