@@ -19,7 +19,7 @@ Return ONLY a JSON object — no markdown, no prose — exactly:
     "scope": <+5 to +20 — +18-20: full strategic autonomy, hands-on expected, first/senior eng leader; +12-17: mostly strategic, some autonomy gaps; +5-11: limited scope or IC-only>,
     "company": <+5 to +15 — +13-15: ideal size/stage/type (product, Series A-C, <200 people); +8-12: decent fit with minor gaps; +5-7: wrong size or stage>,
     "stack": <0 to +10 — +9-10: exact stack match (same technologies named explicitly); +6-8: strong overlap (3+ of candidate's core techs); +3-5: partial overlap (1-2 techs); +1-2: different stack but transferable; 0: no overlap or specialist tech required>,
-    "domain": <-10 to 0 — 0: preferred domain or neutral; -3 to -5: not preferred but learnable (apply max -5 for these); -6 to -10: requires specialist domain knowledge candidate lacks>,
+    "domain": <-10 to 0 — 0: preferred domain (music, media, dev tools) OR any neutral product/SaaS domain where a generalist engineering leader succeeds without specialist knowledge (B2B SaaS, analytics, productivity, HR software, CMS, marketplace, e-commerce, developer infrastructure — default to 0 unless there is a specific reason not to); -3 to -5: domain the candidate has reason to avoid or that requires real specialist adaptation (fintech/banking/financial services, insurance, healthcare/medtech, legaltech, physical sciences — apply -5 for these); -6 to -10: hard specialist knowledge the candidate clearly lacks (quant trading algorithms, hardware/embedded firmware, medical device certification)>,
     "salary": <-3 to 0 — 0: salary stated and above threshold; -3: not stated (norm in UK — apply exactly -3); -20: stated below threshold>,
     "office": <-3 to 0 — 0: remote or hybrid clearly under 3 days; -3: minimum 3 days (borderline); -20: 4+ days or fully in-office confirmed>,
     "dealbreakers": <-50 to 0 — 0: none triggered; -50: hard dealbreaker confirmed (agency, managing-managers at scale, sponsorship needed, banned industry)>
@@ -41,10 +41,9 @@ Scoring guide:
 - 30-49: Weak — doesn't fit well but no hard dealbreaker
 - 0-29: Poor fit or a dealbreaker triggered (score 0-15 if dealbreaker confirmed)
 
-Hard ceiling rules (apply before returning fit_score):
-- Salary unstated → fit_score ≤ 88
-- Domain not preferred (even if learnable) → fit_score ≤ 90
-- Both salary unstated AND domain not preferred → fit_score ≤ 84
+Hard ceiling rule: if the domain requires meaningful specialist adaptation
+(fintech, legaltech, insurance, healthcare, physical sciences), the score
+cannot exceed 88 regardless of other strengths.
 
 Important interpretation rules:
 
@@ -169,16 +168,13 @@ class BulkScorer:
         breakdown = data.get("breakdown", {})
         if breakdown:
             fit_score = max(0, min(100, 50 + sum(breakdown.values())))
-            # Enforce ceilings: unstated salary and/or non-preferred domain
-            # prevent a role from appearing near-perfect when it has real gaps.
-            salary_gap = breakdown.get("salary", 0) == -3          # not stated
-            domain_gap = -5 <= breakdown.get("domain", 0) < 0      # not preferred but learnable
-            if salary_gap and domain_gap:
-                fit_score = min(fit_score, 84)
-            elif salary_gap:
+            # Enforce ceiling for genuinely problematic domains (fintech, legal,
+            # insurance etc.) — scored -5 by the model. Neutral SaaS domains
+            # score 0 and are unaffected. Salary-only gap is already penalised
+            # by the -3 deduction; no additional ceiling needed since unstated
+            # salary is the norm in UK hiring.
+            if breakdown.get("domain", 0) <= -5:
                 fit_score = min(fit_score, 88)
-            elif domain_gap:
-                fit_score = min(fit_score, 90)
         else:
             fit_score = int(data["fit_score"])
 
