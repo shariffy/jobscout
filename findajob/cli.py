@@ -421,13 +421,10 @@ def rescore(
 
             listing_with_jd = listing.model_copy(update={"description": enriched_desc})
 
-            # Delete old scores
-            store.conn.execute("DELETE FROM scores WHERE listing_id = ?", (lid,))
-            store.conn.commit()
-
-            # Re-score
+            # Score first, then replace — so a crash mid-flight leaves the old score intact
             try:
                 score = scorer.score(listing_with_jd)
+                store.conn.execute("DELETE FROM scores WHERE listing_id = ?", (lid,))
                 store.insert_score(score)
                 color = "green" if score.fit_score >= cfg.ai.fit_threshold else (
                     "yellow" if score.fit_score >= 50 else "red"
