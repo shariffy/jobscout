@@ -355,10 +355,12 @@ def list_jobs(
 
 @app.command()
 def rescore(
-    listing_ids: list[int] = typer.Argument(..., help="Listing IDs to rescore (from find-a-job list)"),
+    listing_ids: list[int] = typer.Argument(default=None, help="Listing IDs to rescore (from find-a-job list)"),
+    all_listings: bool = typer.Option(False, "--all", help="Rescore every listing in the database"),
+    min_fit: int = typer.Option(0, "--min-fit", "-f", help="With --all, only rescore listings scoring at or above this"),
     config: Optional[str] = _CONFIG_OPT,
 ) -> None:
-    """Re-score specific listings with the current profile, fetching full JD from the listing URL."""
+    """Re-score listings with the current profile, fetching full JD from the listing URL."""
     import httpx
     from bs4 import BeautifulSoup
     from .sources.http_source import _extract_jd
@@ -366,6 +368,10 @@ def rescore(
     from .scoring import BulkScorer
 
     cfg = _load(config)
+
+    if not all_listings and not listing_ids:
+        console.print("[red]Provide listing IDs or pass --all.[/]")
+        raise typer.Exit(1)
 
     if not Path("candidate_profile.json").exists():
         console.print("[red]No candidate_profile.json — run [bold]find-a-job profile[/] first.[/]")
@@ -382,6 +388,20 @@ def rescore(
     ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
     with Store(cfg.store.db_path) as store:
+        if all_listings:
+            sql = "SELECT id FROM listings"
+            params: list = []
+            if min_fit:
+                sql = """
+                    SELECT l.id FROM listings l
+                    JOIN (SELECT listing_id, MAX(fit_score) AS fit_score FROM scores GROUP BY listing_id) s
+                    ON s.listing_id = l.id WHERE s.fit_score >= ?
+                """
+                params = [min_fit]
+            sql += " ORDER BY id"
+            listing_ids = [r[0] for r in store.conn.execute(sql, params).fetchall()]
+            console.print(f"[bold]Rescoring {len(listing_ids)} listings…[/]\n")
+
         for lid in listing_ids:
             listing = store.get_listing(lid)
             if not listing:
