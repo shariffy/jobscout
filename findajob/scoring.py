@@ -31,11 +31,20 @@ Return ONLY a JSON object — no markdown, no prose — exactly:
 The fit_score must equal 50 + sum of all breakdown values (capped at 0–100).
 
 Scoring guide:
-- 90-100: Near-perfect — title, scope, company type, salary, and location all align
-- 70-89: Strong — most criteria met, minor gaps
+- 95-100: Exceptional — reserve for roles where EVERY positive is near-maximum AND
+  salary is confirmed above threshold AND domain is preferred or neutral AND office
+  is confirmed ≤2 days or remote. Do not award 95+ if any of these are absent.
+- 85-94: Near-perfect — title and scope are strong, at most one minor gap
+  (e.g. unstated salary OR learnable domain, not both)
+- 70-84: Strong — most criteria met, two or more minor gaps present
 - 50-69: Partial — some good signals but meaningful gaps
 - 30-49: Weak — doesn't fit well but no hard dealbreaker
 - 0-29: Poor fit or a dealbreaker triggered (score 0-15 if dealbreaker confirmed)
+
+Hard ceiling rules (apply before returning fit_score):
+- Salary unstated → fit_score ≤ 88
+- Domain not preferred (even if learnable) → fit_score ≤ 90
+- Both salary unstated AND domain not preferred → fit_score ≤ 84
 
 Important interpretation rules:
 
@@ -159,8 +168,17 @@ class BulkScorer:
 
         breakdown = data.get("breakdown", {})
         if breakdown:
-            # Compute score from breakdown to prevent holistic drift
             fit_score = max(0, min(100, 50 + sum(breakdown.values())))
+            # Enforce ceilings: unstated salary and/or non-preferred domain
+            # prevent a role from appearing near-perfect when it has real gaps.
+            salary_gap = breakdown.get("salary", 0) == -3          # not stated
+            domain_gap = -5 <= breakdown.get("domain", 0) < 0      # not preferred but learnable
+            if salary_gap and domain_gap:
+                fit_score = min(fit_score, 84)
+            elif salary_gap:
+                fit_score = min(fit_score, 88)
+            elif domain_gap:
+                fit_score = min(fit_score, 90)
         else:
             fit_score = int(data["fit_score"])
 
