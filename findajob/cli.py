@@ -389,16 +389,25 @@ def rescore(
 
     with Store(cfg.store.db_path) as store:
         if all_listings:
-            sql = "SELECT id FROM listings"
-            params: list = []
             if min_fit:
                 sql = """
                     SELECT l.id FROM listings l
+                    LEFT JOIN applications a ON a.listing_id = l.id
                     JOIN (SELECT listing_id, MAX(fit_score) AS fit_score FROM scores GROUP BY listing_id) s
-                    ON s.listing_id = l.id WHERE s.fit_score >= ?
+                        ON s.listing_id = l.id
+                    WHERE s.fit_score >= ?
+                      AND (a.status IS NULL OR a.status != 'not_interested')
+                    ORDER BY l.id
                 """
-                params = [min_fit]
-            sql += " ORDER BY id"
+                params: list = [min_fit]
+            else:
+                sql = """
+                    SELECT l.id FROM listings l
+                    LEFT JOIN applications a ON a.listing_id = l.id
+                    WHERE (a.status IS NULL OR a.status != 'not_interested')
+                    ORDER BY l.id
+                """
+                params = []
             listing_ids = [r[0] for r in store.conn.execute(sql, params).fetchall()]
             console.print(f"[bold]Rescoring {len(listing_ids)} listings…[/]\n")
 
@@ -613,3 +622,56 @@ def chase(
         )
 
     console.print(table)
+
+
+@app.command()
+def prune(
+    min_fit: int = typer.Option(70, "--min-fit", help="Archive Notion pages scoring below this threshold."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Print what would be archived without doing it."),
+    config: Optional[str] = _CONFIG_OPT,
+) -> None:
+    """Archive Notion pages for listings that scored below the threshold (or were never scored)."""
+    cfg = _load(config)
+    if not cfg.notion.token or not cfg.notion.database_id:
+        console.print("[red]Notion not configured.[/]")
+        raise typer.Exit(1)
+
+    from .notion_sync import NotionSync
+    ns = NotionSync(token=cfg.notion.token, database_id=cfg.notion.database_id)
+
+    with Store(cfg.store.db_path) as store:
+        # Find Notion-linked applications where current score < threshold or no score
+        rows = store.conn.execute("""
+            SELECT a.listing_id, a.notion_page_id, l.title, l.company,
+                   COALESCE(s.fit_score, -1) AS fit_score, a.status
+            FROM applications a
+            JOIN listings l ON l.id = a.listing_id
+            LEFT JOIN (
+                SELECT listing_id, MAX(fit_score) AS fit_score FROM scores GROUP BY listing_id
+            ) s ON s.listing_id = a.listing_id
+            WHERE a.notion_page_id IS NOT NULL
+              AND (a.status IS NULL OR a.status NOT IN ('applied', 'interviewing', 'offer'))
+              AND (s.fit_score IS NULL OR s.fit_score < ?)
+        """, (min_fit,)).fetchall()
+
+    if not rows:
+        console.print(f"[green]Nothing to prune (all Notion pages score ≥ {min_fit}).[/]")
+        return
+
+    console.print(f"[bold]{'Would archive' if dry_run else 'Archiving'} {len(rows)} Notion pages below {min_fit}:[/]\n")
+    archived = 0
+    for row in rows:
+        lid, page_id, title, company, fit, status = row
+        label = f"  {fit:3d}  {title[:45]} @ {company}"
+        if dry_run:
+            console.print(f"[dim]{label}[/]")
+        else:
+            try:
+                ns.archive_page(page_id)
+                console.print(f"[dim]{label}[/]")
+                archived += 1
+            except Exception as exc:
+                console.print(f"[yellow]  skip {lid}: {exc}[/]")
+
+    if not dry_run:
+        console.print(f"\n[green]Archived {archived} pages.[/]")
