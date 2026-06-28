@@ -166,25 +166,42 @@ class BulkScorer:
         self._system = _SYSTEM_TEMPLATE.format(profile_text=_profile_text(profile))
 
     def score(self, listing: Listing) -> Score:
-        response = self._client.messages.create(
-            model=self._cfg.ai.bulk_model,
-            max_tokens=512,
-            system=[
-                {
-                    "type": "text",
-                    "text": self._system,
-                    "cache_control": {"type": "ephemeral"},
-                }
-            ],
-            messages=[
-                {
-                    "role": "user",
-                    "content": f"Score this listing:\n\n{_listing_text(listing)}",
-                }
-            ],
-        )
+        messages = [
+            {
+                "role": "user",
+                "content": f"Score this listing:\n\n{_listing_text(listing)}",
+            }
+        ]
+        system = [
+            {
+                "type": "text",
+                "text": self._system,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
 
-        data = _parse_score(response.content[0].text)
+        last_exc: Exception | None = None
+        for attempt in range(2):
+            response = self._client.messages.create(
+                model=self._cfg.ai.bulk_model,
+                max_tokens=1024,
+                system=system,
+                messages=messages,
+            )
+            raw = response.content[0].text if response.content else ""
+            try:
+                data = _parse_score(raw)
+                break
+            except Exception as exc:
+                last_exc = exc
+                if attempt == 0:
+                    # Retry once; ask the model to emit only the JSON
+                    messages = messages + [
+                        {"role": "assistant", "content": raw},
+                        {"role": "user", "content": "Reply with only the JSON object, no other text."},
+                    ]
+        else:
+            raise ValueError(f"Could not parse score after 2 attempts. Last raw: {raw!r}") from last_exc
 
         breakdown = data.get("breakdown", {})
         if breakdown:
