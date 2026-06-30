@@ -43,7 +43,7 @@ _DB_PROPERTIES = {
             "options": [
                 {"name": "Rescore", "color": "blue"},
                 {"name": "Prep", "color": "purple"},
-                {"name": "Apply", "color": "green"},
+                {"name": "Mark as Applied", "color": "green"},
                 {"name": "Not Interested", "color": "red"},
             ]
         }
