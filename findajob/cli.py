@@ -312,6 +312,57 @@ def apply(
 
 
 # ---------------------------------------------------------------------------
+# prep
+# ---------------------------------------------------------------------------
+
+@app.command()
+def prep(
+    listing_id: int = typer.Argument(..., help="Listing ID (from find-a-job list)"),
+    config: Optional[str] = _CONFIG_OPT,
+) -> None:
+    """Generate an application prep brief for a role and append it to its Notion page."""
+    import httpx
+    from bs4 import BeautifulSoup
+    from .prep import generate_prep
+    from .profile import build_profile
+    from .sources.http_source import _extract_jd
+
+    cfg = _load(config)
+
+    with Store(cfg.store.db_path) as store:
+        listing = store.get_listing(listing_id)
+        if not listing:
+            console.print(f"[red]No listing {listing_id}[/]")
+            raise typer.Exit(1)
+        score = store.get_best_score(listing_id)
+        app_row = store.get_application(listing_id)
+
+    # Enrich description from live URL
+    ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    try:
+        resp = httpx.get(listing.url, headers={"User-Agent": ua}, follow_redirects=True, timeout=20)
+        jd = _extract_jd(BeautifulSoup(resp.text, "html.parser"))
+        if jd and len(jd) > len(listing.description or ""):
+            listing = listing.model_copy(update={"description": jd})
+    except Exception as exc:
+        console.print(f"[yellow]Could not fetch full JD: {exc}[/]")
+
+    profile_obj = build_profile(cfg)
+
+    console.print(f"[bold]Generating prep brief for[/] {listing.title} @ {listing.company}…\n")
+    content = generate_prep(cfg, listing, profile_obj, score)
+    console.print(content)
+
+    if app_row and app_row.notion_page_id:
+        try:
+            ns = _notion(cfg)
+            ns.append_prep_content(app_row.notion_page_id, content)
+            console.print("\n[dim]Appended to Notion page.[/]")
+        except Exception as exc:
+            console.print(f"\n[yellow]Notion append failed: {exc}[/]")
+
+
+# ---------------------------------------------------------------------------
 # list / chase
 # ---------------------------------------------------------------------------
 
@@ -510,6 +561,7 @@ def watch(
     from bs4 import BeautifulSoup as _BS
     from .models import Application
     from .notion_sync import NotionSync
+    from .prep import generate_prep
     from .profile import build_profile
     from .scoring import BulkScorer
     from .sources.http_source import _extract_jd
@@ -580,6 +632,21 @@ def watch(
                         ns.update_score_callout(page_id, score)
                         ns.reset_action(page_id)
                         console.print(f"    [dim]rescored → {score.fit_score}[/]")
+
+                    elif action == "Prep":
+                        profile_obj = build_profile(cfg)
+                        score = store.get_best_score(lid)
+                        try:
+                            resp = _httpx.get(listing.url, headers={"User-Agent": _ua}, follow_redirects=True, timeout=20)
+                            jd = _extract_jd(_BS(resp.text, "html.parser"))
+                            if jd and len(jd) > len(listing.description or ""):
+                                listing = listing.model_copy(update={"description": jd})
+                        except Exception:
+                            pass
+                        content = generate_prep(cfg, listing, profile_obj, score)
+                        ns.append_prep_content(page_id, content)
+                        ns.reset_action(page_id)
+                        console.print(f"    [dim]prep brief appended to Notion page[/]")
 
                     else:
                         # Unknown action — clear it
