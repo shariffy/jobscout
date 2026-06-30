@@ -228,17 +228,32 @@ class NotionSync:
             })
 
     def append_prep_content(self, page_id: str, content: str) -> None:
-        self._patch(f"/blocks/{page_id}/children", {
-            "children": [
-                {
+        blocks: list[dict] = [
+            {
+                "object": "block",
+                "type": "heading_2",
+                "heading_2": {"rich_text": _rt("Application Prep")},
+            }
+        ]
+        for line in content.splitlines():
+            if line.startswith("## "):
+                blocks.append({
                     "object": "block",
-                    "type": "heading_2",
-                    "heading_2": {"rich_text": _rt("Application Prep")},
-                },
-                {
+                    "type": "heading_3",
+                    "heading_3": {"rich_text": _rt(line[3:].strip())},
+                })
+            elif line.startswith("- ") or line.startswith("* "):
+                blocks.append({
+                    "object": "block",
+                    "type": "bulleted_list_item",
+                    "bulleted_list_item": {"rich_text": _rt(line[2:].strip())},
+                })
+            elif line.strip():
+                blocks.append({
                     "object": "block",
                     "type": "paragraph",
-                    "paragraph": {"rich_text": _rt(content[:2000])},
-                },
-            ]
-        })
+                    "paragraph": {"rich_text": _rt(line.strip())},
+                })
+        # Notion allows max 100 children per request — batch if needed
+        for i in range(0, len(blocks), 100):
+            self._patch(f"/blocks/{page_id}/children", {"children": blocks[i:i + 100]})
