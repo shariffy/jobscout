@@ -645,8 +645,13 @@ def watch(
                             pass
                         content = generate_prep(cfg, listing, profile_obj, score)
                         ns.append_prep_content(page_id, content)
+                        # Mark as prepping so the role stays visible on the board
+                        existing = store.get_application(lid)
+                        app_row = (existing or Application(listing_id=lid)).model_copy(update={"status": "prepping"})
+                        store.upsert_application(app_row)
+                        ns._patch(f"/pages/{page_id}", {"properties": {"Status": {"select": {"name": "prepping"}}}})
                         ns.reset_action(page_id)
-                        console.print(f"    [dim]prep brief appended to Notion page[/]")
+                        console.print(f"    [dim]prep brief appended → status: prepping[/]")
 
                     else:
                         # Unknown action — clear it

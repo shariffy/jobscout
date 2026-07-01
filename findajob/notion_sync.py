@@ -13,6 +13,7 @@ _NOTION_VERSION = "2022-06-28"
 
 _STATUS_COLORS = {
     "shortlisted": "blue",
+    "prepping": "purple",
     "applied": "yellow",
     "interviewing": "orange",
     "offer": "green",
