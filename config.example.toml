@@ -23,15 +23,71 @@ database_id = ""            # the board database ID (created by `find-a-job init
 [store]
 db_path = "findajob.db"
 
+# --- scoring ---
+# Tune how listings are scored. Everything else about what you want comes from
+# your CV + goals (the profile); this section holds the hard numbers.
+[scoring]
+# salary_floor: omit to ignore compensation entirely. currency is just wording.
+# salary_floor = 100000
+# salary_currency = "$"
+# max_office_days: omit to ignore location/remote policy. Set to e.g. 2 to treat
+# roles requiring more than 2 office days/week as a hard negative.
+# max_office_days = 3
+# specialist_domain_ceiling: cap the score for roles needing specialist domain
+# knowledge you lack. 100 = no cap (default).
+# specialist_domain_ceiling = 100
+
+# Max points each dimension can add/subtract. Defaults shown — uncomment to retune.
+# [scoring.weights]
+# title = 20        # match to your target job titles
+# scope = 20        # responsibility / seniority / autonomy fit
+# company = 15      # size, stage, and type of company
+# stack = 10        # how well required skills/tools match yours
+# domain = 10       # penalty when the industry needs specialist knowledge
+# salary = 3        # penalty when pay is unstated
+# office = 3        # penalty when at your office-day limit
+# dealbreakers = 50 # penalty when a stated dealbreaker is confirmed
+
 # --- sources ---
 # Each [[sources]] entry defines one job board / feed to scrape.
-# type = "http" | "feed" | "browser"
+# type = "http" | "feed" | "browser". See docs/sources.md for the full guide.
 
 [[sources]]
 name = "Hacker News Who's Hiring"
 type = "feed"
 url = "https://hnrss.org/whoishiring"
 enabled = true
+
+# Example real HTTP board — CSS selectors target a job-listing page. Edit the
+# search URL and selectors for the board and role you want. See docs/sources.md.
+[[sources]]
+name = "Built In London – search"
+type = "http"
+url = "https://www.builtinlondon.uk/jobs?search=your+role+here"
+enabled = false
+selectors.container = "div[data-id='job-card']"
+selectors.title = "a[data-id='job-card-title']"
+selectors.company = "a[data-id='company-title'] span"
+selectors.url = "a[data-id='job-card-title']"
+selectors.location = "span.font-barlow.text-gray-04"
+selectors.description = ".bounded-attribute-section"
+selectors.fetch_detail = true
+
+# Example LinkedIn source — uses the public guest job-search endpoint (no login).
+# Put your title in keywords= and your location in location= (URL-encoded).
+# f_TPR=r604800 = posted in the last 7 days. LinkedIn rate-limits: keep it light.
+# See docs/sources.md.
+[[sources]]
+name = "LinkedIn – search (London)"
+type = "http"
+url = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?keywords=your+role+here&location=London%2C%20England%2C%20United%20Kingdom&f_TPR=r604800&start=0"
+enabled = false
+selectors.container = "li"
+selectors.title = "h3.base-search-card__title"
+selectors.company = "h4.base-search-card__subtitle a"
+selectors.location = "span.job-search-card__location"
+selectors.url = "a.base-card__full-link"
+selectors.fetch_detail = true
 
 [[sources]]
 name = "Example HTTP board"

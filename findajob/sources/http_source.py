@@ -80,6 +80,18 @@ class HttpSource:
         return self._parse(html, base_url or self._cfg.url)
 
 
+def _clean_jsonld_description(raw: str) -> str:
+    """JSON-LD `description` fields often embed HTML, sometimes entity-escaped
+    (LinkedIn stores the whole JD as escaped HTML in a string). Unescape entities
+    and strip any tags so the scorer receives clean prose rather than markup."""
+    import html as _html
+
+    text = _html.unescape(raw)  # &lt;p&gt; -> <p>
+    if "<" in text and ">" in text:
+        text = BeautifulSoup(text, "html.parser").get_text(" ")
+    return normalise_text(text)
+
+
 def _extract_jd(soup: BeautifulSoup) -> str:
     """Extract a job description from an individual job page using structural heuristics."""
     import json as _json
@@ -88,7 +100,7 @@ def _extract_jd(soup: BeautifulSoup) -> str:
         try:
             data = _json.loads(script.string or "")
             if isinstance(data, dict) and data.get("description"):
-                return normalise_text(data["description"])
+                return _clean_jsonld_description(data["description"])
         except Exception:
             pass
     # 2. <main> tag paragraphs / list items — broad but reliable
