@@ -38,6 +38,37 @@ class NotionConfig(BaseModel):
         return self
 
 
+class ScoringWeights(BaseModel):
+    """Maximum magnitude (points) each dimension can contribute to the score.
+
+    Positive dimensions add up to this many points; negative dimensions
+    (domain, salary, office, dealbreakers) subtract up to this many.
+    """
+
+    title: int = 20
+    scope: int = 20
+    company: int = 15
+    stack: int = 10  # how well required skills/tools match the candidate
+    domain: int = 10
+    salary: int = 3
+    office: int = 3
+    dealbreakers: int = 50
+
+
+class ScoringConfig(BaseModel):
+    # Salary: leave floor unset to ignore salary entirely. currency is a symbol
+    # or code used only for the prompt wording, e.g. "£", "$", "USD".
+    salary_floor: int | None = None
+    salary_currency: str = ""
+    # Office: max days/week the candidate will work in-office. Unset = ignore
+    # location/remote policy.
+    max_office_days: int | None = None
+    # Cap the score when the domain needs specialist expertise the candidate
+    # lacks. 100 = no ceiling (the default; scoring is otherwise unconstrained).
+    specialist_domain_ceiling: int = 100
+    weights: ScoringWeights = Field(default_factory=ScoringWeights)
+
+
 class StoreConfig(BaseModel):
     db_path: str = "findajob.db"
 
@@ -69,6 +100,7 @@ class Config(BaseModel):
     ai: AIConfig = Field(default_factory=AIConfig)
     notion: NotionConfig = Field(default_factory=NotionConfig)
     store: StoreConfig = Field(default_factory=StoreConfig)
+    scoring: ScoringConfig = Field(default_factory=ScoringConfig)
     sources: list[SourceConfig] = Field(default_factory=list)
 
 

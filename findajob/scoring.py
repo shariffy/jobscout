@@ -10,19 +10,21 @@ from .models import CandidateProfile, Listing, Score
 
 _SYSTEM_TEMPLATE = """\
 You are a job-fit analyst. Score how well a job listing matches the candidate profile below.
+All judgements about what the candidate wants, is qualified for, and will not accept must come
+from the CANDIDATE PROFILE — do not assume a particular industry, seniority, or field.
 
 Return ONLY a JSON object — no markdown, no prose — exactly:
 {{
   "fit_score": <integer 0-100>,
   "breakdown": {{
-    "title": <+5 to +20 — +18-20: exact preferred title; +12-17: close variant (e.g. Head vs Director); +5-11: weaker match (EM when Director preferred)>,
-    "scope": <+5 to +20 — +18-20: full strategic autonomy, hands-on expected, first/senior eng leader at a small/mid-size company; +12-17: mostly strategic, some autonomy gaps; +5-11: limited scope or IC-only; score 0 to +8 if the role expects managing a global or multi-region engineering org, or is effectively CTO-level responsibility across multiple countries — that is over-scoped for this candidate>,
-    "company": <+5 to +15 — +13-15: ideal size/stage/type (product, Series A-C, <200 people); +8-12: decent fit with minor gaps; +5-7: wrong size or stage>,
-    "stack": <0 to +10 — +9-10: exact stack match (same technologies named explicitly); +6-8: strong overlap (3+ of candidate's core techs); +3-5: partial overlap (1-2 techs); +1-2: different stack but transferable; 0: no overlap. If the JD lists a specific language or framework as a hard requirement (not just a preference) and it is absent from the candidate's skills (e.g. Java, Go, Rust, C++, Python ML, heavy Kubernetes), cap stack at +3 and flag stack-mismatch-required regardless of other overlap>,
-    "domain": <-10 to 0 — 0: preferred domain (music, media, dev tools) OR any neutral product/SaaS domain where a generalist engineering leader succeeds without specialist knowledge (B2B SaaS, analytics, productivity, HR software, CMS, marketplace, e-commerce, developer infrastructure — default to 0 unless there is a specific reason not to); -3 to -5: domain the candidate has reason to avoid or that requires real specialist adaptation (fintech/banking/financial services, insurance, healthcare/medtech, legaltech, physical sciences — apply -5 for these); -8 to -10: the JD explicitly gates on domain experience the candidate lacks ("must have fintech experience", "strong data engineering background required", "AI/ML domain expertise essential") — apply -8 to -10 for these>,
-    "salary": <-3 to 0 — 0: salary stated and above threshold; -3: not stated (norm in UK — apply exactly -3); -20: stated below threshold>,
-    "office": <-3 to 0 — 0: remote or hybrid clearly under 3 days; -3: minimum 3 days (borderline); -20: 4+ days or fully in-office confirmed>,
-    "dealbreakers": <-50 to 0 — 0: none triggered; -50: hard dealbreaker confirmed (agency, managing-managers at scale, sponsorship needed, banned industry, Java required, data engineering / data platform role, ML infrastructure role, forward deployed engineering role)>
+    "title": <0 to +{w_title} — score by how the role's title ranks among the candidate's preferred titles. If the candidate gives a ranked list, a top-ranked title scores near +{w_title}, a mid-ranked one about half, and a title at the bottom of the list or absent from it scores low (a quarter of +{w_title} or less). Do NOT give a bottom-ranked or non-preferred title more than half of +{w_title}>,
+    "scope": <0 to +{w_scope} — judge against the CAREER TRACK the candidate wants (see the Track rule below), not just autonomy. Highest when the role is on the candidate's desired track at the level they want. Deduct toward 0 when the role is over-scoped (materially more scale/leadership than they have held) OR off-track (e.g. an individual-contributor role when the candidate wants a leadership role, or vice versa) — a role can offer strong technical autonomy and still be a scope mismatch>,
+    "company": <0 to +{w_company} — highest when company size, stage, and type match the candidate's stated preferences; lower for clear mismatches>,
+    "stack": <0 to +{w_stack} — how well the skills, tools, or qualifications the role requires match the candidate's. Highest for strong/explicit overlap; low for a different-but-transferable background; near 0 for no overlap. If the role hard-requires a specific skill the candidate clearly lacks and it is central to the job (not just "a plus"), keep this low and flag skills-mismatch-required>,
+    "domain": <-{w_domain} to 0 — 0 for the candidate's preferred domains OR any neutral domain where someone with their background succeeds without specialist knowledge (default to 0 unless there is a specific reason not to); a moderate negative for a domain the candidate has reason to avoid or that needs real specialist adaptation; the largest negative only when the role explicitly gates on domain experience the candidate lacks>,
+    "salary": {salary_scale},
+    "office": {office_scale},
+    "dealbreakers": <-{w_dealbreakers} to 0 — 0 if none of the candidate's stated dealbreakers (see profile) are triggered; -{w_dealbreakers} if any hard dealbreaker from the profile is confirmed in the listing>
   }},
   "rationale": "<2-3 sentences explaining the score>",
   "flags": ["<short tag>", ...]
@@ -31,91 +33,112 @@ Return ONLY a JSON object — no markdown, no prose — exactly:
 The fit_score must equal 50 + sum of all breakdown values (capped at 0–100).
 
 Scoring guide:
-- 95-100: Exceptional — reserve for roles where EVERY positive is near-maximum AND
-  salary is confirmed above threshold AND domain is preferred or neutral AND office
-  is confirmed ≤2 days or remote. Do not award 95+ if any of these are absent.
-- 85-94: Near-perfect — title and scope are strong, at most one minor gap
-  (e.g. unstated salary OR learnable domain, not both)
-- 70-84: Strong — most criteria met, two or more minor gaps present
-- 50-69: Partial — some good signals but meaningful gaps
-- 30-49: Weak — doesn't fit well but no hard dealbreaker
-- 0-29: Poor fit or a dealbreaker triggered (score 0-15 if dealbreaker confirmed)
-
-Hard ceiling rule: if the domain requires meaningful specialist adaptation
-(fintech, legaltech, insurance, healthcare, physical sciences), the score
-cannot exceed 88 regardless of other strengths.
-
+- 95-100: Exceptional — reserve for roles where EVERY positive is near-maximum and no negative
+  applies. Do not award 95+ if any criterion is absent or uncertain.
+- 85-94: Near-perfect — title and scope are strong, at most one minor gap.
+- 70-84: Strong — most criteria met, two or more minor gaps present.
+- 50-69: Partial — some good signals but meaningful gaps.
+- 30-49: Weak — doesn't fit well but no hard dealbreaker.
+- 0-29: Poor fit or a dealbreaker triggered (score 0-15 if a dealbreaker is confirmed).
+{ceiling_rule}
 Important interpretation rules:
 
 Location:
 - The "Location" field is scraped from a job card and may be inaccurate (e.g. "In-Office" when the
   full description says "Hybrid"). Always prefer the office/remote policy stated in the description
   over the Location field when they conflict.
-- Office days: "minimum N days in office" means N days hybrid — treat it as N days exactly, not more.
-  Only flag dealbreaker-office if the role explicitly requires 4+ days, "full time", "5 days/week", or
-  "fully in-office". "Minimum 3 days" is hybrid at the candidate's stated maximum — flag hybrid-borderline
-  but deduct at most 3 points; it is NOT a dealbreaker.
 
-Org scale:
-- Distinguish total company headcount from engineering team size. "Going from 10 to 100 people" refers
-  to the whole company, not the engineering org. A Director/Head at a 10–100-person company typically
-  leads a small team of ICs directly — that is NOT managing managers at scale.
-- Generic startup phrases like "build and lead a world-class engineering organization", "scale our
-  engineering team", "grow the engineering function", or "build and grow a team" do NOT mean managing
-  managers — at small companies they mean being the first or most senior engineering leader.
-- Only flag dealbreaker-managing-managers if the JD explicitly names managers, EMs, or team leads as
-  direct reports, or uses phrases like "lead through other leaders", "manage engineering managers",
-  or "multiple teams through managers". The bar for this flag should be high.
-- If the role expects managing a global or multi-region engineering org (teams across multiple
-  countries, international headcount responsibility) or is CTO-level at a company where the candidate
-  would be the most senior technical person across countries, flag scope-over-scoped and score scope
-  at 0 to +8, not higher.
+Career track (leadership vs individual contributor):
+- Infer from the candidate's preferred/ranked titles whether they primarily want a leadership/management
+  track (Head, Director, VP, Engineering Manager) or an individual-contributor track (Staff, Principal,
+  Senior Engineer). Score BOTH title and scope relative to that track.
+- If the candidate wants a leadership track, an individual-contributor role (Staff/Principal/Senior
+  engineer, or a "Tech Lead" with no team, direct reports, or roadmap ownership) is a scope mismatch:
+  score scope low — roughly a third of the maximum or less — and flag scope-track-mismatch, even if the
+  role offers strong technical autonomy. Do not award high scope to an IC role for a leadership-seeking
+  candidate just because it is senior or hands-on.
+- Exception: honour any exception the candidate states in their profile. For example, if the candidate
+  says they will accept an IC role at a well-known / top-tier consumer brand, then for such a company
+  treat the IC role as on-track and score scope normally.
+- Apply the reverse for an IC-track candidate faced with a pure people-management role.
 
-Dealbreakers — hard stops that score dealbreakers: -50:
-- Java required as the primary backend language (the candidate does not know Java).
-- Data engineering, data platform, or analytics engineering as the core role focus — not incidental
-  data work but the primary technical domain.
-- ML infrastructure or ML platform engineering roles — building/running training pipelines, model
-  serving, or MLOps infrastructure.
-- Forward Deployed Engineering or Customer Engineering roles where the primary work is deploying or
-  customising the product at customer sites.
-
-Tech stack mismatch:
-- If the JD hard-requires a language or framework absent from the candidate's skills and central
-  to the role (Java backend, Go services, C++ systems, Python ML, Kubernetes-only infra), cap
-  stack at +3 and flag stack-mismatch-required. Do not treat "experience with X is a plus" as a
-  hard requirement.
+Scope and scale:
+- Distinguish total company headcount from team size. Generic growth phrases ("scale the team",
+  "build a world-class organisation", "grow the function") do NOT by themselves mean the role
+  exceeds the candidate's experience — at smaller companies they usually mean being the first or
+  most senior person in that function. Only treat a role as over-scoped when the listing clearly
+  requires a scale of leadership or responsibility the candidate's profile says they have not held.
 
 Domain:
-- Do not score against a fixed whitelist of preferred domains. Instead assess adaptability: could an
-  experienced engineering leader with this candidate's background realistically succeed and add value
-  in this domain without deep specialist knowledge? Most product domains are accessible to a generalist
-  senior engineering leader. Only deduct significantly (10+ points) if the domain requires specialist
-  expertise the candidate clearly lacks (e.g. hardware/embedded, medical device compliance, quant
-  trading algorithms). For domains that are simply "not their preference" but not a barrier, deduct
-  at most 5 points and note it as a minor gap.
+- Do not score against a fixed whitelist. Assess adaptability: could this candidate realistically
+  succeed and add value in this domain without deep specialist knowledge? Most domains are accessible.
+  Deduct heavily only when the domain genuinely requires specialist expertise the candidate lacks.
+  For domains that are merely "not their preference" but not a barrier, deduct only a little.
 
-Salary:
-- Salary not stated is the norm in UK tech hiring — the majority of listings omit it. Flag it with
-  salary-not-stated but deduct at most 3 points. Do not treat missing salary the same as a confirmed
-  low salary. Only trigger dealbreaker-salary if the salary IS explicitly stated and falls below the
-  candidate's stated minimum.
+Dealbreakers:
+- The candidate's dealbreakers are listed in the profile. Trigger the dealbreakers penalty only when
+  the listing clearly confirms one of them; do not infer a dealbreaker from ambiguous wording.
 
 Flag vocabulary (use what fits, invent concise ones for anything unusual):
-  dealbreaker-agency, dealbreaker-salary, dealbreaker-office, dealbreaker-sponsorship, dealbreaker-industry
-  dealbreaker-managing-managers, dealbreaker-java, dealbreaker-data-engineering, dealbreaker-ml-infra
-  dealbreaker-forward-deployed
+  dealbreaker-<name> for any confirmed dealbreaker from the profile
   title-strong, title-weak, title-mismatch
   salary-above-threshold, salary-below-threshold, salary-not-stated
-  company-well-known, company-size-ok, company-too-large
-  hybrid-ok, hybrid-borderline, office-heavy, remote-only
-  domain-match, domain-gated, stack-match, stack-mismatch-required, scope-strategic, scope-ic-only
-  scope-over-scoped, hands-on-expected
+  company-size-ok, company-too-large, company-stage-mismatch
+  remote-only, hybrid-ok, hybrid-borderline, office-heavy
+  domain-match, domain-gated, skills-match, skills-mismatch-required
+  scope-match, scope-over-scoped, scope-under-scoped, scope-track-mismatch
 
 ## Candidate Profile
 
 {profile_text}
 """
+
+
+def _build_system(cfg: Config, profile: CandidateProfile) -> str:
+    """Render the scoring system prompt from config weights and thresholds."""
+    w = cfg.scoring.weights
+    s = cfg.scoring
+
+    if s.salary_floor is not None:
+        floor = f"{s.salary_currency}{s.salary_floor:,}"
+        salary_scale = (
+            f"<-20 to 0 — 0: salary stated at or above {floor}; "
+            f"-{w.salary}: salary not stated (common; deduct only this much, do not treat as low); "
+            f"-20: stated below {floor}>"
+        )
+    else:
+        salary_scale = "<always 0 — no salary threshold set; ignore compensation>"
+
+    if s.max_office_days is not None:
+        n = s.max_office_days
+        office_scale = (
+            f"<-20 to 0 — 0: remote, or hybrid requiring fewer than {n} day(s)/week in office; "
+            f"-{w.office}: hybrid at exactly {n} day(s) (the candidate's stated maximum — borderline, "
+            f"not a dealbreaker); -20: requires more than {n} day(s)/week or is fully in-office>"
+        )
+    else:
+        office_scale = "<always 0 — no office-day preference set; ignore location/remote policy>"
+
+    if s.specialist_domain_ceiling < 100:
+        ceiling_rule = (
+            f"\nHard ceiling: if the domain requires meaningful specialist adaptation the candidate\n"
+            f"lacks, the score cannot exceed {s.specialist_domain_ceiling} regardless of other strengths.\n"
+        )
+    else:
+        ceiling_rule = "\n"
+
+    return _SYSTEM_TEMPLATE.format(
+        w_title=w.title,
+        w_scope=w.scope,
+        w_company=w.company,
+        w_stack=w.stack,
+        w_domain=w.domain,
+        w_dealbreakers=w.dealbreakers,
+        salary_scale=salary_scale,
+        office_scale=office_scale,
+        ceiling_rule=ceiling_rule,
+        profile_text=_profile_text(profile),
+    )
 
 
 def _profile_text(profile: CandidateProfile) -> str:
@@ -163,7 +186,7 @@ class BulkScorer:
         self._cfg = cfg
         self._profile = profile
         self._client = anthropic.Anthropic(api_key=cfg.ai.anthropic_api_key)
-        self._system = _SYSTEM_TEMPLATE.format(profile_text=_profile_text(profile))
+        self._system = _build_system(cfg, profile)
 
     def score(self, listing: Listing) -> Score:
         messages = [
@@ -206,13 +229,13 @@ class BulkScorer:
         breakdown = data.get("breakdown", {})
         if breakdown:
             fit_score = max(0, min(100, 50 + sum(breakdown.values())))
-            # Enforce ceiling for genuinely problematic domains (fintech, legal,
-            # insurance etc.) — scored -5 by the model. Neutral SaaS domains
-            # score 0 and are unaffected. Salary-only gap is already penalised
-            # by the -3 deduction; no additional ceiling needed since unstated
-            # salary is the norm in UK hiring.
-            if breakdown.get("domain", 0) <= -5:
-                fit_score = min(fit_score, 88)
+            # Enforce the specialist-domain ceiling: when the model penalised the
+            # domain meaningfully (-5 or worse), the role needs specialist
+            # adaptation the candidate lacks, so cap the score. Neutral domains
+            # score 0 and are unaffected. Disabled when the ceiling is 100.
+            ceiling = self._cfg.scoring.specialist_domain_ceiling
+            if ceiling < 100 and breakdown.get("domain", 0) <= -5:
+                fit_score = min(fit_score, ceiling)
         else:
             fit_score = int(data["fit_score"])
 

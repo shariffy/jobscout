@@ -20,7 +20,7 @@ Bullet list of specific changes to make to the CV before applying:
 - Reorder or reword existing bullets to mirror the JD's language
 - Surface experience that's relevant but currently buried
 - Flag anything to remove or de-emphasise for this application
-Keep each bullet actionable: "Change X to Y" or "Move Z to the top of the ROLI section".
+Keep each bullet actionable: "Change X to Y" or "Move Z to the top of your most recent role".
 
 ## Cover letter
 3–4 bullet points on what to lead with and highlight. Each point should name a specific \
