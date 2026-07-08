@@ -1,11 +1,30 @@
 from __future__ import annotations
 
 import hashlib
-import json
+import re
 from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
+
+
+def content_key(company: str, title: str) -> str:
+    """Normalised identity for a listing: same (company, title) => same key.
+
+    Keyed on company + title rather than URL so the same job dedups across
+    sources (e.g. LinkedIn vs Built In) and across searches whose URLs carry
+    different tracking parameters. Lowercased, punctuation/whitespace collapsed.
+    Parenthetical suffixes are stripped from the company (Built In writes
+    "Light (light.inc)" where LinkedIn writes "Light") but kept in the title,
+    where "(Platform)" or "(Frontend)" can distinguish genuinely different roles.
+    """
+    def norm(s: str, strip_parens: bool = False) -> str:
+        s = (s or "").lower()
+        if strip_parens:
+            s = re.sub(r"\([^)]*\)", " ", s)  # drop "(light.inc)", "(zego.com)"
+        return re.sub(r"[^a-z0-9]+", " ", s).strip()
+
+    return f"{norm(company, strip_parens=True)}::{norm(title)}"
 
 
 class Listing(BaseModel):
@@ -23,11 +42,7 @@ class Listing(BaseModel):
     @model_validator(mode="after")
     def compute_hash(self) -> Listing:
         if not self.hash:
-            payload = json.dumps(
-                {"url": self.url, "title": self.title, "company": self.company},
-                sort_keys=True,
-            )
-            self.hash = hashlib.sha256(payload.encode()).hexdigest()
+            self.hash = hashlib.sha256(content_key(self.company, self.title).encode()).hexdigest()
         return self
 
 

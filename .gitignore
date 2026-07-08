@@ -3,6 +3,7 @@ findajob.db
 *.db
 *.db-wal
 *.db-shm
+*.db.bak-*
 .DS_Store
 candidate_profile.json
 .venv/
