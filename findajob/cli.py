@@ -264,33 +264,44 @@ def shortlist(
 # apply
 # ---------------------------------------------------------------------------
 
-@app.command()
-def apply(
+def _apply_to_store(store, listing_id: int, chase_days: int = 7):
+    """Mark a listing as applied in the local store and set a chase date.
+
+    Returns (listing, saved_application, chase_at), or (None, None, None) if the
+    listing does not exist. Notion syncing is left to the caller.
+    """
+    from .models import Application
+
+    listing = store.get_listing(listing_id)
+    if not listing:
+        return None, None, None
+
+    now = datetime.now(UTC)
+    chase_at = now + timedelta(days=chase_days)
+    existing = store.get_application(listing_id)
+    app_row = (existing or Application(listing_id=listing_id)).model_copy(update={
+        "status": "applied",
+        "applied_at": now,
+        "chase_at": chase_at,
+    })
+    saved = store.upsert_application(app_row)
+    return listing, saved, chase_at
+
+
+@app.command(name="mark-applied")
+def mark_applied(
     listing_id: int = typer.Argument(..., help="Listing ID (from find-a-job list)"),
     chase_days: int = typer.Option(7, "--chase-days", help="Days until follow-up reminder"),
     config: Optional[str] = _CONFIG_OPT,
 ) -> None:
     """Mark a role as applied and set a chase date."""
     cfg = _load(config)
-    now = datetime.now(UTC)
-    chase_at = now + timedelta(days=chase_days)
 
     with Store(cfg.store.db_path) as store:
-        listing = store.get_listing(listing_id)
+        listing, saved, chase_at = _apply_to_store(store, listing_id, chase_days)
         if not listing:
             console.print(f"[red]No listing with ID {listing_id}.[/]")
             raise typer.Exit(1)
-
-        existing = store.get_application(listing_id)
-        app_row = existing or __import__("findajob.models", fromlist=["Application"]).Application(
-            listing_id=listing_id
-        )
-        app_row = app_row.model_copy(update={
-            "status": "applied",
-            "applied_at": now,
-            "chase_at": chase_at,
-        })
-        saved = store.upsert_application(app_row)
 
         if saved.notion_page_id:
             try:
@@ -298,7 +309,7 @@ def apply(
                 ns.update_status(
                     saved.notion_page_id,
                     status="applied",
-                    applied_at=now,
+                    applied_at=saved.applied_at,
                     chase_at=chase_at,
                 )
                 console.print("[dim]Notion updated.[/]")
@@ -652,6 +663,17 @@ def watch(
                         ns._patch(f"/pages/{page_id}", {"properties": {"Status": {"select": {"name": "prepping"}}}})
                         ns.reset_action(page_id)
                         console.print(f"    [dim]prep brief appended → status: prepping[/]")
+
+                    elif action == "Mark as Applied":
+                        _, saved, chase_at = _apply_to_store(store, lid)
+                        ns.update_status(
+                            page_id,
+                            status="applied",
+                            applied_at=saved.applied_at,
+                            chase_at=chase_at,
+                        )
+                        ns.reset_action(page_id)
+                        console.print(f"    [dim]marked applied → chase {chase_at.date()}[/]")
 
                     else:
                         # Unknown action — clear it
