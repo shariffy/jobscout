@@ -70,7 +70,7 @@ class ScoringConfig(BaseModel):
 
 
 class StoreConfig(BaseModel):
-    db_path: str = "findajob.db"
+    db_path: str = "jobscout.db"
 
 
 class SelectorConfig(BaseModel):
@@ -111,7 +111,7 @@ class Config(BaseModel):
     sources: list[SourceConfig] = Field(default_factory=list)
 
 
-_CONFIG_PATHS = ["config.toml", "~/.config/findajob/config.toml"]
+_CONFIG_PATHS = ["config.toml", "~/.config/jobscout/config.toml"]
 
 
 def load_config(path: str | Path | None = None) -> Config:

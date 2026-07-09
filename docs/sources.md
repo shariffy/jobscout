@@ -178,7 +178,7 @@ The selectors work exactly as for `http`. Set the credential env vars before sca
 ```bash
 export EXAMPLE_USERNAME=you@example.com
 export EXAMPLE_PASSWORD=…
-find-a-job scan
+jobscout scan
 ```
 
 Keep credentials in environment variables (or a secrets manager) — never commit them.

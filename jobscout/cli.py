@@ -13,7 +13,7 @@ from rich.table import Table
 from .config import load_config
 from .store import Store
 
-app = typer.Typer(name="find-a-job", help="Personal job-board analyser and tracker.")
+app = typer.Typer(name="jobscout", help="Personal job-board analyser and tracker.")
 console = Console()
 
 _CONFIG_OPT = typer.Option(None, "--config", "-c", help="Path to config.toml")
@@ -31,7 +31,7 @@ def _notion(cfg) -> "NotionSync":
     if not cfg.notion.database_id:
         console.print(
             "[red]No Notion database_id in config.toml.[/]\n"
-            "Run [bold]find-a-job init --notion-parent <page-url>[/] to create the board."
+            "Run [bold]jobscout init --notion-parent <page-url>[/] to create the board."
         )
         raise typer.Exit(1)
     return NotionSync(token=cfg.notion.token, database_id=cfg.notion.database_id)
@@ -175,7 +175,7 @@ def scan(
         from .scoring import BulkScorer
 
         if not Path("candidate_profile.json").exists():
-            console.print("[yellow]No candidate_profile.json — run [bold]find-a-job profile[/] first.[/]")
+            console.print("[yellow]No candidate_profile.json — run [bold]jobscout profile[/] first.[/]")
             return
 
         profile_obj = build_profile(cfg)
@@ -198,7 +198,7 @@ def scan(
 
         console.print(
             f"\n[bold]Done.[/] {scored}/{len(new_listings)} scored. "
-            f"Run [bold]find-a-job list --min-fit {cfg.ai.fit_threshold}[/] to see top matches."
+            f"Run [bold]jobscout list --min-fit {cfg.ai.fit_threshold}[/] to see top matches."
         )
 
 
@@ -290,7 +290,7 @@ def _apply_to_store(store, listing_id: int, chase_days: int = 7):
 
 @app.command(name="mark-applied")
 def mark_applied(
-    listing_id: int = typer.Argument(..., help="Listing ID (from find-a-job list)"),
+    listing_id: int = typer.Argument(..., help="Listing ID (from jobscout list)"),
     chase_days: int = typer.Option(7, "--chase-days", help="Days until follow-up reminder"),
     config: Optional[str] = _CONFIG_OPT,
 ) -> None:
@@ -328,7 +328,7 @@ def mark_applied(
 
 @app.command()
 def prep(
-    listing_id: int = typer.Argument(..., help="Listing ID (from find-a-job list)"),
+    listing_id: int = typer.Argument(..., help="Listing ID (from jobscout list)"),
     config: Optional[str] = _CONFIG_OPT,
 ) -> None:
     """Generate an application prep brief for a role and append it to its Notion page."""
@@ -389,7 +389,7 @@ def list_jobs(
         rows = store.list_listings(min_fit=min_fit or None, limit=limit)
 
     if not rows:
-        console.print("[dim]No listings found. Run [bold]find-a-job scan[/] first.[/]")
+        console.print("[dim]No listings found. Run [bold]jobscout scan[/] first.[/]")
         raise typer.Exit()
 
     table = Table(show_header=True, header_style="bold", box=None, pad_edge=False)
@@ -417,7 +417,7 @@ def list_jobs(
 
 @app.command()
 def rescore(
-    listing_ids: list[int] = typer.Argument(default=None, help="Listing IDs to rescore (from find-a-job list)"),
+    listing_ids: list[int] = typer.Argument(default=None, help="Listing IDs to rescore (from jobscout list)"),
     all_listings: bool = typer.Option(False, "--all", help="Rescore every listing in the database"),
     min_fit: int = typer.Option(0, "--min-fit", "-f", help="With --all, only rescore listings scoring at or above this"),
     config: Optional[str] = _CONFIG_OPT,
@@ -436,7 +436,7 @@ def rescore(
         raise typer.Exit(1)
 
     if not Path("candidate_profile.json").exists():
-        console.print("[red]No candidate_profile.json — run [bold]find-a-job profile[/] first.[/]")
+        console.print("[red]No candidate_profile.json — run [bold]jobscout profile[/] first.[/]")
         raise typer.Exit(1)
 
     profile_obj = build_profile(cfg)
@@ -526,7 +526,7 @@ def rescore(
 
 @app.command()
 def dismiss(
-    listing_ids: list[int] = typer.Argument(..., help="Listing IDs to dismiss (from find-a-job list)"),
+    listing_ids: list[int] = typer.Argument(..., help="Listing IDs to dismiss (from jobscout list)"),
     config: Optional[str] = _CONFIG_OPT,
 ) -> None:
     """Mark listings as not interested — hides them from future shortlists."""

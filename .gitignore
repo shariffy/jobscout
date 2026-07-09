@@ -1,5 +1,5 @@
 config.toml
-findajob.db
+jobscout.db
 *.db
 *.db-wal
 *.db-shm

@@ -18,10 +18,10 @@ fit_threshold = 70          # push to Notion when fit >= this
 
 [notion]
 token = ""                  # your Notion integration token
-database_id = ""            # the board database ID (created by `find-a-job init`)
+database_id = ""            # the board database ID (created by `jobscout init`)
 
 [store]
-db_path = "findajob.db"
+db_path = "jobscout.db"
 
 # --- scoring ---
 # Tune how listings are scored. Everything else about what you want comes from

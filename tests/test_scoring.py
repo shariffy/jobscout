@@ -2,9 +2,9 @@
 import json
 from unittest.mock import MagicMock, patch
 
-from findajob.config import AIConfig, Config, StoreConfig, ProfileConfig
-from findajob.models import CandidateProfile, Listing
-from findajob.scoring import BulkScorer, _parse_score
+from jobscout.config import AIConfig, Config, StoreConfig, ProfileConfig
+from jobscout.models import CandidateProfile, Listing
+from jobscout.scoring import BulkScorer, _parse_score
 
 
 def make_cfg() -> Config:
@@ -65,7 +65,7 @@ def test_parse_score_strips_markdown_fence():
 
 # --- BulkScorer ---
 
-@patch("findajob.scoring.anthropic.Anthropic")
+@patch("jobscout.scoring.anthropic.Anthropic")
 def test_bulk_scorer_returns_score(mock_anthropic_cls):
     mock_client = MagicMock()
     mock_anthropic_cls.return_value = mock_client
@@ -83,7 +83,7 @@ def test_bulk_scorer_returns_score(mock_anthropic_cls):
     assert score.listing_id == 1
 
 
-@patch("findajob.scoring.anthropic.Anthropic")
+@patch("jobscout.scoring.anthropic.Anthropic")
 def test_bulk_scorer_dealbreaker_low_score(mock_anthropic_cls):
     mock_client = MagicMock()
     mock_anthropic_cls.return_value = mock_client
@@ -98,7 +98,7 @@ def test_bulk_scorer_dealbreaker_low_score(mock_anthropic_cls):
     assert "dealbreaker-agency" in score.flags
 
 
-@patch("findajob.scoring.anthropic.Anthropic")
+@patch("jobscout.scoring.anthropic.Anthropic")
 def test_bulk_scorer_uses_cache_control(mock_anthropic_cls):
     mock_client = MagicMock()
     mock_anthropic_cls.return_value = mock_client
@@ -113,7 +113,7 @@ def test_bulk_scorer_uses_cache_control(mock_anthropic_cls):
     assert system[0]["cache_control"] == {"type": "ephemeral"}
 
 
-@patch("findajob.scoring.anthropic.Anthropic")
+@patch("jobscout.scoring.anthropic.Anthropic")
 def test_score_batch(mock_anthropic_cls):
     mock_client = MagicMock()
     mock_anthropic_cls.return_value = mock_client

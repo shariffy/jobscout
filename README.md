@@ -1,4 +1,4 @@
-# find-a-job
+# jobscout
 
 An AI-assisted job-search pipeline. It scrapes job boards and feeds, scores each
 listing against **your** CV and goals using Claude, pushes the strong matches to a
@@ -36,7 +36,7 @@ Requires Python 3.12+.
 
 ```bash
 git clone <your-fork-url>
-cd find-a-job
+cd jobscout
 python -m venv .venv && source .venv/bin/activate
 pip install -e .
 playwright install chromium   # only needed for browser-type sources
@@ -45,11 +45,11 @@ playwright install chromium   # only needed for browser-type sources
 ## Quickstart
 
 ```bash
-find-a-job init                 # scaffold config.toml from the example
+jobscout init                 # scaffold config.toml from the example
 # edit config.toml: set your CV path, goals, API key, and sources
-find-a-job profile              # build your candidate profile from CV + goals
-find-a-job scan                 # scrape sources and score new listings
-find-a-job list                 # see ranked matches in the terminal
+jobscout profile              # build your candidate profile from CV + goals
+jobscout scan                 # scrape sources and score new listings
+jobscout list                 # see ranked matches in the terminal
 ```
 
 To use the Notion board:
@@ -57,14 +57,14 @@ To use the Notion board:
 ```bash
 # create a Notion integration (https://www.notion.so/my-integrations),
 # share a page with it, then:
-find-a-job init --notion-parent <notion-page-url>   # creates the board, prints its ID
+jobscout init --notion-parent <notion-page-url>   # creates the board, prints its ID
 # paste the database_id into config.toml, then:
-find-a-job shortlist            # push strong matches to Notion
-find-a-job watch                # poll Notion for actions and execute them
-find-a-job prep <listing-id>    # generate a prep brief for a role
+jobscout shortlist            # push strong matches to Notion
+jobscout watch                # poll Notion for actions and execute them
+jobscout prep <listing-id>    # generate a prep brief for a role
 ```
 
-Run `find-a-job --help` for the full command list.
+Run `jobscout --help` for the full command list.
 
 ## Configuration
 
@@ -108,7 +108,7 @@ and goals already express those preferences, or for non-engineering searches.
 
 Your dealbreakers, must-haves, and preferred titles/domains are read from your profile
 (derived from your CV + goals), not from this file — so the same rubric works for any
-role. Edit your `goals` and re-run `find-a-job profile` to change them.
+role. Edit your `goals` and re-run `jobscout profile` to change them.
 
 ## Cost
 
@@ -122,7 +122,7 @@ adding high-traffic sources.
 ```bash
 pip install -e '.[dev]'
 pytest
-ruff check findajob/
+ruff check jobscout/
 ```
 
 ## License

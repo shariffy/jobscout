@@ -1,8 +1,8 @@
 """Store dedup and round-trip tests (no AI, no network)."""
 import pytest
 
-from findajob.models import Application, Listing, Score
-from findajob.store import Store
+from jobscout.models import Application, Listing, Score
+from jobscout.store import Store
 
 
 @pytest.fixture

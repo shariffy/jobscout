@@ -4,9 +4,9 @@ from pathlib import Path
 import feedparser
 import pytest
 
-from findajob.config import SelectorConfig, SourceConfig
-from findajob.sources.feed_source import FeedSource
-from findajob.sources.http_source import HttpSource
+from jobscout.config import SelectorConfig, SourceConfig
+from jobscout.sources.feed_source import FeedSource
+from jobscout.sources.http_source import HttpSource
 
 FIXTURES = Path(__file__).parent / "fixtures"
 

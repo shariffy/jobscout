@@ -59,7 +59,7 @@ def _parse_dt(value: str | None) -> datetime | None:
 
 
 class Store:
-    def __init__(self, db_path: str | Path = "findajob.db") -> None:
+    def __init__(self, db_path: str | Path = "jobscout.db") -> None:
         self._path = str(db_path)
         self._conn: sqlite3.Connection | None = None
 
