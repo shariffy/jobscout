@@ -117,6 +117,9 @@ name = "LinkedIn – Head of Engineering (London)"
 type = "http"
 url = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?keywords=Head%20of%20Engineering&location=London%2C%20England%2C%20United%20Kingdom&f_TPR=r604800&start=0"
 enabled = true
+pages = 3
+page_param = "start"
+page_size = 10
 selectors.container = "li"
 selectors.title = "h3.base-search-card__title"
 selectors.company = "h4.base-search-card__subtitle a"
@@ -127,15 +130,23 @@ selectors.fetch_detail = true
 
 - `f_TPR=r604800` restricts results to jobs posted in the last 7 days (the number is
   seconds; `r86400` = last 24h). Omit it for all results.
-- `start=0` is the paging offset; the endpoint returns ~10 cards per request. Add more
-  blocks with `start=10`, `start=20`, … to go deeper.
+- **Pagination:** the endpoint returns ~10 cards per request, so fetch only the first 10
+  without it. `pages = 3` with `page_param = "start"` and `page_size = 10` fetches
+  `start=0,10,20` (the top 30); fetching stops early if a page comes back empty. See
+  the pagination note below.
 - `fetch_detail = true` pulls the full job description from each posting's JSON-LD
   (LinkedIn embeds it), which the scraper decodes to clean text.
-- **Rate limits:** LinkedIn throttles scraping. Each block is one list request plus one
-  request per job for the detail fetch, so a handful of keyword blocks per scan is fine
-  but dozens will start returning `429`. If that happens, reduce the number of searches,
-  drop `fetch_detail`, or scan less frequently. Respect LinkedIn's terms and keep volume
-  light.
+- **Rate limits:** LinkedIn throttles scraping. Each page is one list request, plus one
+  request per job for the detail fetch, so `pages × ~10` detail fetches per block. A few
+  keyword blocks at `pages = 3` is usually fine; higher `pages` or many blocks will start
+  returning `429`. If that happens, lower `pages`, drop `fetch_detail`, or scan less
+  often. Respect LinkedIn's terms and keep volume light.
+
+**Pagination (any http source).** Set `pages` to fetch more than one page. Each page
+advances the `page_param` query parameter by `page_size`, starting from its current value
+in the `url`. For offset-based endpoints like LinkedIn use `page_param = "start"`,
+`page_size = 10`; for page-number boards use `page_param = "page"`, `page_size = 1`.
+Fetching stops as soon as a page returns no listings.
 
 ---
 

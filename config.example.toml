@@ -75,13 +75,17 @@ selectors.fetch_detail = true
 
 # Example LinkedIn source — uses the public guest job-search endpoint (no login).
 # Put your title in keywords= and your location in location= (URL-encoded).
-# f_TPR=r604800 = posted in the last 7 days. LinkedIn rate-limits: keep it light.
-# See docs/sources.md.
+# f_TPR=r604800 = posted in the last 7 days. The endpoint returns ~10 results per
+# page, so pages=3 fetches the top 30 (start=0,10,20). LinkedIn rate-limits:
+# keep pages low if you see 429s. See docs/sources.md.
 [[sources]]
 name = "LinkedIn – search (London)"
 type = "http"
 url = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?keywords=your+role+here&location=London%2C%20England%2C%20United%20Kingdom&f_TPR=r604800&start=0"
 enabled = false
+pages = 3
+page_param = "start"
+page_size = 10
 selectors.container = "li"
 selectors.title = "h3.base-search-card__title"
 selectors.company = "h4.base-search-card__subtitle a"

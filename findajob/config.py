@@ -92,6 +92,13 @@ class SourceConfig(BaseModel):
     login_url: str = ""
     username_env: str = ""
     password_env: str = ""
+    # Pagination (http sources). Fetch `pages` pages by advancing the query
+    # param `page_param` by `page_size` each time, starting from its current
+    # value in the url. LinkedIn: page_param="start", page_size=10. Page-number
+    # boards: page_param="page", page_size=1. Fetching stops early on an empty page.
+    pages: int = 1
+    page_param: str = ""
+    page_size: int = 10
     extra: dict[str, Any] = Field(default_factory=dict)
 
 

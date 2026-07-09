@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+import time
 from typing import Any
 
 import httpx
@@ -20,11 +22,27 @@ class HttpSource:
         self.name = config.name
 
     def fetch(self) -> list[Listing]:
-        html = self._get(self._cfg.url)
-        listings = self._parse(html, self._cfg.url)
+        listings: list[Listing] = []
+        for i, url in enumerate(self._page_urls()):
+            if i:
+                time.sleep(0.5)  # be polite when paginating
+            page = self._parse(self._get(url), url)
+            if not page:
+                break  # empty page — end of results
+            listings.extend(page)
         if self._cfg.selectors.fetch_detail:
             listings = [self._enrich(l) for l in listings]
         return listings
+
+    def _page_urls(self):
+        cfg = self._cfg
+        if cfg.pages <= 1 or not cfg.page_param:
+            yield cfg.url
+            return
+        m = re.search(rf"[?&]{re.escape(cfg.page_param)}=([0-9]+)", cfg.url)
+        base = int(m.group(1)) if m else 0
+        for i in range(cfg.pages):
+            yield _set_query_param(cfg.url, cfg.page_param, base + i * cfg.page_size)
 
     def _get(self, url: str) -> str:
         with httpx.Client(follow_redirects=True, timeout=30) as client:
@@ -78,6 +96,16 @@ class HttpSource:
     def parse_html(self, html: str, base_url: str = "") -> list[Listing]:
         """Exposed for testing — parse arbitrary HTML without network."""
         return self._parse(html, base_url or self._cfg.url)
+
+
+def _set_query_param(url: str, param: str, value: int) -> str:
+    """Replace (or append) a numeric query parameter, leaving the rest of the
+    url untouched so pre-encoded values (e.g. %2C in a location) are preserved."""
+    pattern = rf"([?&]{re.escape(param)}=)[^&]*"
+    if re.search(pattern, url):
+        return re.sub(pattern, rf"\g<1>{value}", url)
+    sep = "&" if "?" in url else "?"
+    return f"{url}{sep}{param}={value}"
 
 
 def _clean_jsonld_description(raw: str) -> str:
