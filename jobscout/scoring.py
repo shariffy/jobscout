@@ -43,10 +43,21 @@ Scoring guide:
 {ceiling_rule}
 Important interpretation rules:
 
-Location:
+Location and office presence:
 - The "Location" field is scraped from a job card and may be inaccurate (e.g. "In-Office" when the
   full description says "Hybrid"). Always prefer the office/remote policy stated in the description
   over the Location field when they conflict.
+- Read the description for in-office signals even when there is no explicit policy line: phrasing
+  like "based in <city>", "we're in the office", a named HQ presented as central to how the team
+  works, or an emphasis on co-location with no mention of remote/hybrid all indicate a meaningful
+  in-office expectation. When such signals imply more in-office presence than the candidate's stated
+  maximum, apply the office penalty (and the office dealbreaker if the profile makes it one).
+- But do not over-trigger: when the listing is genuinely ambiguous about how many office days are
+  required, treat it as borderline (the middle office deduction), not an automatic dealbreaker.
+- "Minimum N days in office" where N equals the candidate's stated maximum office days counts as AT
+  the maximum (the borderline middle deduction), not above it. Do not escalate to the full office
+  penalty unless the listing states more than N days or names additional mandatory in-office
+  expectations — a strong role must not be tanked by an at-maximum office requirement.
 
 Career track (leadership vs individual contributor):
 - Infer from the candidate's preferred/ranked titles whether they primarily want a leadership/management
@@ -68,6 +79,11 @@ Scope and scale:
   exceeds the candidate's experience — at smaller companies they usually mean being the first or
   most senior person in that function. Only treat a role as over-scoped when the listing clearly
   requires a scale of leadership or responsibility the candidate's profile says they have not held.
+- Concretely, treat a role as over-scoped (drive scope toward 0 and flag scope-over-scoped) when it
+  requires leading other engineering leaders/managers, owning a multi-team or org-wide function, or
+  scaling an organisation materially larger than the candidate has run — e.g. a VP/CTO-level remit
+  for a candidate targeting Head/Director. A title one step above the candidate's target that also
+  carries organisation-building scope is a scope mismatch, not a stretch role.
 
 Domain:
 - Do not score against a fixed whitelist. Assess adaptability: could this candidate realistically
@@ -78,6 +94,12 @@ Domain:
 Dealbreakers:
 - The candidate's dealbreakers are listed in the profile. Trigger the dealbreakers penalty only when
   the listing clearly confirms one of them; do not infer a dealbreaker from ambiguous wording.
+- Function/track mismatch is dealbreaker-class: if the role is not in the candidate's field at all
+  (e.g. a sales, marketing, product-management, or other non-engineering role for an engineering
+  candidate), OR is a hard career-track mismatch that falls outside every exception the candidate
+  states, treat it like a confirmed dealbreaker — apply the full dealbreakers penalty and score
+  0–15. A fundamentally wrong role must not float near 50 just because no positive dimension scored
+  strongly negative.
 
 Flag vocabulary (use what fits, invent concise ones for anything unusual):
   dealbreaker-<name> for any confirmed dealbreaker from the profile
@@ -171,11 +193,18 @@ def _listing_text(listing: Listing) -> str:
 
 def _parse_score(text: str) -> dict:
     raw = text.strip()
+    # Strip a leading markdown code fence if the model wrapped its JSON in one.
     if raw.startswith("```"):
-        raw = raw.split("```")[1]
+        raw = raw.split("```", 2)[1]
         if raw.startswith("json"):
             raw = raw[4:]
         raw = raw.strip()
+    # Decode the first JSON object, tolerating any prose or extra data that some
+    # models (e.g. Haiku) append after it — json.loads() alone rejects trailing text.
+    start = raw.find("{")
+    if start != -1:
+        obj, _ = json.JSONDecoder().raw_decode(raw[start:])
+        return obj
     return json.loads(raw)
 
 
@@ -207,11 +236,14 @@ class BulkScorer:
         for attempt in range(2):
             response = self._client.messages.create(
                 model=self._cfg.ai.bulk_model,
-                max_tokens=1024,
+                max_tokens=4096,
                 system=system,
                 messages=messages,
             )
-            raw = response.content[0].text if response.content else ""
+            # Reasoning models (e.g. Sonnet 5, Opus 4.8) emit a thinking block
+            # before the answer, so content[0] isn't necessarily the text — take
+            # the first text block. Also skips any non-text (tool) blocks.
+            raw = next((b.text for b in response.content if getattr(b, "type", None) == "text"), "")
             try:
                 data = _parse_score(raw)
                 break

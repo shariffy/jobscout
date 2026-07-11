@@ -66,7 +66,7 @@ def generate_prep(
 
     response = client.messages.create(
         model=cfg.ai.prep_model,
-        max_tokens=3000,
+        max_tokens=6000,
         system=_SYSTEM,
         tools=[{"type": "web_search_20260209", "name": "web_search"}],
         messages=[{"role": "user", "content": user_content}],

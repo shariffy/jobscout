@@ -42,9 +42,22 @@ def make_listing(**kwargs) -> Listing:
 
 def mock_response(fit_score: int, rationale: str, flags: list[str]) -> MagicMock:
     content = MagicMock()
+    content.type = "text"  # real Anthropic TextBlock carries type == "text"
     content.text = json.dumps({"fit_score": fit_score, "rationale": rationale, "flags": flags})
     resp = MagicMock()
     resp.content = [content]
+    return resp
+
+
+def mock_response_with_thinking(fit_score: int, rationale: str, flags: list[str]) -> MagicMock:
+    """Mimic a reasoning model: a thinking block precedes the text block."""
+    thinking = MagicMock()
+    thinking.type = "thinking"
+    text = MagicMock()
+    text.type = "text"
+    text.text = json.dumps({"fit_score": fit_score, "rationale": rationale, "flags": flags})
+    resp = MagicMock()
+    resp.content = [thinking, text]
     return resp
 
 
@@ -61,6 +74,19 @@ def test_parse_score_strips_markdown_fence():
     raw = '```json\n{"fit_score": 72, "rationale": "Decent.", "flags": []}\n```'
     data = _parse_score(raw)
     assert data["fit_score"] == 72
+
+
+def test_parse_score_tolerates_trailing_prose():
+    # Haiku sometimes appends explanation after the JSON, which json.loads rejects.
+    raw = '```json\n{"fit_score": 32, "breakdown": {"title": 8}}\n```\nHere is why I scored it 32.'
+    data = _parse_score(raw)
+    assert data["fit_score"] == 32
+
+
+def test_parse_score_tolerates_leading_prose_unfenced():
+    raw = 'Sure, here is the score:\n{"fit_score": 50, "breakdown": {}}'
+    data = _parse_score(raw)
+    assert data["fit_score"] == 50
 
 
 # --- BulkScorer ---
@@ -81,6 +107,23 @@ def test_bulk_scorer_returns_score(mock_anthropic_cls):
     assert score.model == "claude-haiku-4-5"
     assert "title-strong" in score.flags
     assert score.listing_id == 1
+
+
+@patch("jobscout.scoring.anthropic.Anthropic")
+def test_bulk_scorer_skips_thinking_block(mock_anthropic_cls):
+    # A reasoning model returns a thinking block before the JSON text block; the
+    # scorer must read the text block, not content[0].
+    mock_client = MagicMock()
+    mock_anthropic_cls.return_value = mock_client
+    mock_client.messages.create.return_value = mock_response_with_thinking(
+        91, "Strong across the board.", ["title-strong"]
+    )
+
+    scorer = BulkScorer(make_cfg(), make_profile())
+    score = scorer.score(make_listing())
+
+    assert score.fit_score == 91
+    assert "title-strong" in score.flags
 
 
 @patch("jobscout.scoring.anthropic.Anthropic")

@@ -62,20 +62,26 @@ def build_profile(cfg: Config, force: bool = False) -> CandidateProfile:
     client = anthropic.Anthropic(api_key=cfg.ai.anthropic_api_key)
     response = client.messages.create(
         model=cfg.ai.deep_model,
-        max_tokens=2048,
+        max_tokens=4096,
         system=_SYSTEM,
         messages=[{"role": "user", "content": user_prompt}],
     )
 
-    raw = response.content[0].text.strip()
-    # Strip accidental markdown fences
+    # Take the first text block — reasoning models emit a thinking block first,
+    # so content[0] isn't necessarily the answer.
+    raw = next((b.text for b in response.content if getattr(b, "type", None) == "text"), "").strip()
+    # Strip an accidental markdown fence, then decode the first JSON object,
+    # tolerating any trailing prose the model may append.
     if raw.startswith("```"):
-        raw = raw.split("```")[1]
+        raw = raw.split("```", 2)[1]
         if raw.startswith("json"):
             raw = raw[4:]
         raw = raw.strip()
-
-    data = json.loads(raw)
+    start = raw.find("{")
+    if start != -1:
+        data, _ = json.JSONDecoder().raw_decode(raw[start:])
+    else:
+        data = json.loads(raw)
     # Inject raw goals if Claude didn't copy them
     if not data.get("raw_goals") and goals:
         data["raw_goals"] = goals
