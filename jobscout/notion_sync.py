@@ -27,6 +27,27 @@ _DB_PROPERTIES = {
     "Company": {"rich_text": {}},
     "URL": {"url": {}},
     "Fit": {"number": {"format": "number"}},
+    # Gated assessment (dual-written with Fit during the migration window).
+    "Decision": {
+        "select": {
+            "options": [
+                {"name": "Apply", "color": "green"},
+                {"name": "No", "color": "red"},
+            ]
+        }
+    },
+    "Priority": {"number": {"format": "number"}},
+    "Tier": {
+        "select": {
+            "options": [
+                {"name": "T1", "color": "green"},
+                {"name": "T2", "color": "blue"},
+                {"name": "T3", "color": "yellow"},
+                {"name": "T4", "color": "orange"},
+                {"name": "none", "color": "gray"},
+            ]
+        }
+    },
     "Location": {"rich_text": {}},
     "Status": {
         "select": {
@@ -64,6 +85,14 @@ def _extract_page_id(url_or_id: str) -> str:
 
 def _rt(text: str, limit: int = 2000) -> list[dict]:
     return [{"text": {"content": text[:limit]}}]
+
+
+def _callout_text(score: Score) -> str:
+    if score.tier_label or score.gate_results:  # gated assessment
+        head = "APPLY" if score.decision == "apply" else "NO"
+        tier = f" {score.tier_label}" if score.tier_label not in ("", "none") else ""
+        return f"{head}{tier} (fit {score.fit_score}) — {score.rationale}"
+    return f"Fit {score.fit_score}/100 — {score.rationale}"
 
 
 class NotionSync:
@@ -117,20 +146,38 @@ class NotionSync:
 
     # --- page operations ---
 
+    @staticmethod
+    def score_props(score: Score) -> dict[str, Any]:
+        """Score-derived page properties: Fit always (compat), plus
+        Decision/Priority/Tier when the score carries a gated assessment."""
+        props: dict[str, Any] = {"Fit": {"number": score.fit_score}}
+        if score.decision:
+            props["Decision"] = {"select": {"name": "Apply" if score.decision == "apply" else "No"}}
+        if score.priority is not None:
+            props["Priority"] = {"number": score.priority}
+        if score.tier_label:
+            props["Tier"] = {"select": {"name": score.tier_label}}
+        if score.flags:
+            props["Flags"] = {"rich_text": _rt(", ".join(score.flags))}
+        return props
+
+    def update_score(self, page_id: str, score: Score) -> None:
+        """Refresh one page's score properties and its 🤖 callout."""
+        self._patch(f"/pages/{page_id}", {"properties": self.score_props(score)})
+        self.update_score_callout(page_id, score)
+
     def push_listing(self, listing: Listing, score: Score, status: str = "shortlisted") -> str:
         props: dict[str, Any] = {
             "Role": {"title": _rt(listing.title)},
             "Company": {"rich_text": _rt(listing.company)},
             "URL": {"url": listing.url},
-            "Fit": {"number": score.fit_score},
             "Status": {"select": {"name": status}},
             "Source": {"rich_text": _rt(listing.source_name)},
             "DB ID": {"number": listing.id},
+            **self.score_props(score),
         }
         if listing.location:
             props["Location"] = {"rich_text": _rt(listing.location)}
-        if score.flags:
-            props["Flags"] = {"rich_text": _rt(", ".join(score.flags))}
 
         children = []
         if score.rationale:
@@ -139,7 +186,7 @@ class NotionSync:
                 "type": "callout",
                 "callout": {
                     "icon": {"type": "emoji", "emoji": "🤖"},
-                    "rich_text": _rt(f"Fit {score.fit_score}/100 — {score.rationale}", 2000),
+                    "rich_text": _rt(_callout_text(score), 2000),
                 },
             })
 
@@ -207,7 +254,7 @@ class NotionSync:
             (b["id"] for b in children if b.get("type") == "callout"),
             None,
         )
-        text = f"Fit {score.fit_score}/100 — {score.rationale}"
+        text = _callout_text(score)
         if callout_id:
             self._patch(f"/blocks/{callout_id}", {
                 "callout": {

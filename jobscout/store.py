@@ -24,15 +24,19 @@ CREATE TABLE IF NOT EXISTS listings (
 );
 
 CREATE TABLE IF NOT EXISTS scores (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    listing_id  INTEGER NOT NULL REFERENCES listings(id),
-    fit_score   INTEGER NOT NULL,
-    rationale   TEXT    NOT NULL DEFAULT '',
-    flags       TEXT    NOT NULL DEFAULT '[]',
-    breakdown   TEXT    NOT NULL DEFAULT '{}',
-    model       TEXT    NOT NULL,
-    tier        TEXT    NOT NULL,
-    scored_at   TEXT    NOT NULL
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    listing_id   INTEGER NOT NULL REFERENCES listings(id),
+    fit_score    INTEGER NOT NULL,
+    rationale    TEXT    NOT NULL DEFAULT '',
+    flags        TEXT    NOT NULL DEFAULT '[]',
+    breakdown    TEXT    NOT NULL DEFAULT '{}',
+    model        TEXT    NOT NULL,
+    tier         TEXT    NOT NULL,
+    decision     TEXT    NOT NULL DEFAULT '',
+    priority     INTEGER,
+    tier_label   TEXT    NOT NULL DEFAULT '',
+    gate_results TEXT    NOT NULL DEFAULT '[]',
+    scored_at    TEXT    NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS applications (
@@ -69,7 +73,30 @@ class Store:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.executescript(_SCHEMA)
+        self._migrate()
         self._conn.commit()
+
+    def _migrate(self) -> None:
+        """Add assessment columns to a pre-gated scores table, then backfill.
+
+        decision is derived from the fit >= 70 shortlist convention for any row
+        that lacks one (legacy additive rows included), so `decision = 'apply'`
+        and `fit_score >= 70` stay equivalent while both scorers coexist.
+        Priority/tier are left empty until a gated rescore.
+        """
+        existing = {r["name"] for r in self.conn.execute("PRAGMA table_info(scores)")}
+        for column, ddl in [
+            ("decision", "decision TEXT NOT NULL DEFAULT ''"),
+            ("priority", "priority INTEGER"),
+            ("tier_label", "tier_label TEXT NOT NULL DEFAULT ''"),
+            ("gate_results", "gate_results TEXT NOT NULL DEFAULT '[]'"),
+        ]:
+            if column not in existing:
+                self.conn.execute(f"ALTER TABLE scores ADD COLUMN {ddl}")
+        self.conn.execute(
+            "UPDATE scores SET decision = CASE WHEN fit_score >= 70 THEN 'apply' ELSE 'no' END "
+            "WHERE decision = ''"
+        )
 
     def close(self) -> None:
         if self._conn:
@@ -138,10 +165,12 @@ class Store:
     def list_listings(self, min_fit: int | None = None, limit: int = 100) -> list[dict]:
         """Return listings joined with their best score, optionally filtered by fit."""
         sql = """
-            SELECT l.*, s.fit_score, s.rationale, s.flags, s.tier
+            SELECT l.*, s.fit_score, s.rationale, s.flags, s.tier,
+                   s.decision, s.priority, s.tier_label
             FROM listings l
             LEFT JOIN (
-                SELECT listing_id, MAX(fit_score) AS fit_score, rationale, flags, tier
+                SELECT listing_id, MAX(fit_score) AS fit_score, rationale, flags, tier,
+                       decision, priority, tier_label
                 FROM scores
                 GROUP BY listing_id
             ) s ON s.listing_id = l.id
@@ -168,10 +197,14 @@ class Store:
     # --- scores ---
 
     def insert_score(self, score: Score) -> Score:
+        # Legacy additive scores carry no decision; store the fit-derived one so
+        # decision-based queries see every row.
+        decision = score.decision or ("apply" if score.fit_score >= 70 else "no")
         cur = self.conn.execute(
             """
-            INSERT INTO scores (listing_id, fit_score, rationale, flags, breakdown, model, tier, scored_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO scores (listing_id, fit_score, rationale, flags, breakdown, model, tier,
+                                decision, priority, tier_label, gate_results, scored_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 score.listing_id,
@@ -181,11 +214,15 @@ class Store:
                 json.dumps(score.breakdown),
                 score.model,
                 score.tier,
+                decision,
+                score.priority,
+                score.tier_label,
+                json.dumps(score.gate_results),
                 _dt(score.scored_at),
             ),
         )
         self.conn.commit()
-        return score.model_copy(update={"id": cur.lastrowid})
+        return score.model_copy(update={"id": cur.lastrowid, "decision": decision})
 
     def get_best_score(self, listing_id: int) -> Score | None:
         row = self.conn.execute(
@@ -297,6 +334,9 @@ def _row_to_score(row: sqlite3.Row) -> Score:
     d = dict(row)
     d["flags"] = json.loads(d.get("flags") or "[]")
     d["breakdown"] = json.loads(d.get("breakdown") or "{}")
+    d["gate_results"] = json.loads(d.get("gate_results") or "[]")
+    d["decision"] = d.get("decision") or ""
+    d["tier_label"] = d.get("tier_label") or ""
     d["scored_at"] = _parse_dt(d.get("scored_at"))
     return Score(**d)
 

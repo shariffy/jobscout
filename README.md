@@ -72,8 +72,10 @@ Copy `config.example.toml` to `config.toml` (done for you by `init`) and fill it
 `config.toml` is git-ignored — it holds your keys and personal goals.
 
 - `[profile]` — `cv_path` (PDF or `.md`) and a free-text `goals` blurb.
-- `[ai]` — `anthropic_api_key` (or the `ANTHROPIC_API_KEY` env var), model choices,
-  and `fit_threshold` (push to Notion at/above this score).
+- `[ai]` — one `openrouter_api_key` (or `OPEN_ROUTER_API_KEY`) powers everything:
+  bulk scoring, profile extraction, and prep briefs. `bulk_model` / `deep_model` /
+  `prep_model` are OpenRouter slugs (e.g. `anthropic/claude-haiku-4-5`,
+  `google/gemini-3.5-flash`); plus `fit_threshold` (push to Notion at/above this score).
 - `[notion]` — integration `token` (or `NOTION_TOKEN`) and `database_id`.
 - `[scoring]` — the tunable rubric (below).
 - `[[sources]]` — the boards and feeds to scrape (see [docs/sources.md](docs/sources.md)).
@@ -110,12 +112,38 @@ Your dealbreakers, must-haves, and preferred titles/domains are read from your p
 (derived from your CV + goals), not from this file — so the same rubric works for any
 role. Edit your `goals` and re-run `jobscout profile` to change them.
 
+### Gated assessment (experimental)
+
+Set `scorer = "gated"` under `[ai]` to switch from the single additive fit score to a
+two-part decision: hard eligibility **gates** answer *"should I apply?"* and tiered
+**priority** answers *"which first?"*. The LLM only extracts facts from the listing
+(with confidence and a supporting quote); pure Python applies your policy, so decisions
+are stable, testable, and explainable.
+
+- `[[gates]]` — non-compensatory vetoes: any failed gate means `decision = "no"`, no
+  matter how good the rest is. Each is either a structured predicate over a canonical
+  extracted feature (`feature`/`op`/`value` — see `jobscout/features.py`) or a
+  natural-language `rule` ("Reject only if …"). `on_unknown` controls what happens when
+  the listing doesn't state the fact (`pass` / `fail` / `pass_flag`), and a gate can
+  only hard-fail on a high-confidence detection.
+- `[[priority.tiers]]` + `[priority]` — rank the apply set by tier (matched on title
+  or extracted role substance — substance wins), with per-unknown-gate penalties
+  breaking ties within a tier.
+
+`fit_score` is still written (derived: apply ⇒ 70–100 by tier, no ⇒ below 70), so the
+shortlist threshold, Notion `Fit` column, and existing tooling keep working during the
+migration. See `config.example.toml` for the full config surface and
+`validate_gate.py --scorer gated` for regression-testing gates against roles you
+actually applied to.
+
 ## Cost
 
-Every listing is sent to the Claude API for scoring, so scans cost money. Use a cheap
-model for `bulk_model` (Haiku) and reserve `deep_model` / `prep_model` (Sonnet) for
-prep briefs. Prompt caching is used to keep bulk scoring cheap. Watch your volume when
-adding high-traffic sources.
+Every listing is sent to an LLM for scoring, so scans cost money. All calls route
+through OpenRouter, so pick a cheap `bulk_model` slug (e.g. `anthropic/claude-haiku-4-5`,
+`google/gemini-3.5-flash`, or a `:free` model) since it runs on every listing, and
+reserve stronger `deep_model` / `prep_model` slugs for profile extraction and prep
+briefs. Use `bakeoff.py` to compare model cost and quality before you commit. Watch your
+volume when adding high-traffic sources.
 
 ## Development
 

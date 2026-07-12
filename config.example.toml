@@ -10,11 +10,27 @@ Nice-to-haves: Python or TypeScript stack, series B+ startup or established tech
 """
 
 [ai]
-anthropic_api_key = ""      # or set ANTHROPIC_API_KEY env var
-bulk_model = "claude-haiku-4-5"
-deep_model = "claude-sonnet-4-6"
-prep_model = "claude-sonnet-4-6"
+# One OpenRouter key powers everything: bulk scoring, profile extraction, and
+# prep briefs. Or set the OPEN_ROUTER_API_KEY env var instead.
+openrouter_api_key = ""
+# All three are OpenRouter model slugs (provider/model[:variant]). Examples:
+#   "anthropic/claude-haiku-4-5", "google/gemini-3.5-flash",
+#   "deepseek/deepseek-v4-pro", "qwen/qwen3-next-80b-a3b-instruct:free"
+# bulk_model runs on every listing, so keep it cheap; deep/prep can be stronger.
+bulk_model = "anthropic/claude-haiku-4-5"
+deep_model = "anthropic/claude-sonnet-4-6"
+prep_model = "anthropic/claude-sonnet-4-6"
+# Which producer scores listings:
+#   "additive" (default) — the LLM judges a single 0-100 fit score.
+#   "gated"              — the LLM only extracts facts; Python decides apply/no from
+#                          your [[gates]] and ranks the apply set from [priority].
+#                          fit_score is still written (derived) so Notion/CLI keep working.
+# scorer = "gated"
 fit_threshold = 70          # push to Notion when fit >= this
+# Optional OpenRouter reasoning config for the bulk model. Omit for the provider
+# default, or set effort / turn thinking off:
+# [ai.bulk_reasoning]
+# effort = "low"            # or: enabled = false
 
 [notion]
 token = ""                  # your Notion integration token
@@ -47,6 +63,62 @@ db_path = "jobscout.db"
 # salary = 3        # penalty when pay is unstated
 # office = 3        # penalty when at your office-day limit
 # dealbreakers = 50 # penalty when a stated dealbreaker is confirmed
+
+# --- gated assessment (used when ai.scorer = "gated") ---
+# Gates are hard eligibility vetoes: any failed gate => decision = "no", no matter
+# how good everything else is. Two forms:
+#
+#   Structured — a predicate over a canonical extracted feature. Features the LLM
+#   always extracts (see jobscout/features.py): title, function, role_substance,
+#   office_days_per_week, remote_policy, salary_gbp, primary_backend_language,
+#   industry, company_eng_headcount, company_stage.
+#   Ops: <= >= == != in not_in contains.
+#
+#   Natural-language — anything the schema can't express, as a "Reject only if …"
+#   rule the LLM answers pass/fail/unknown with evidence.
+#
+# on_unknown says what to do when the listing doesn't state the fact (or the model
+# isn't confident): "pass" = benefit of the doubt, "fail" = reject,
+# "pass_flag" = pass but flag the uncertainty (feeds the priority penalty).
+# A gate can only hard-fail on a high-confidence detection (min_confidence, default 0.7).
+#
+# [[gates]]
+# name = "office"
+# feature = "office_days_per_week"
+# op = "<="
+# value = 3
+# on_unknown = "pass"
+#
+# [[gates]]
+# name = "salary_floor"
+# feature = "salary_gbp"
+# op = ">="
+# value = 110000
+# on_unknown = "pass"
+#
+# [[gates]]
+# name = "no_agency"
+# rule = "Reject only if the EMPLOYER's own business is consulting/agency/outsourcing work with no product of its own. A listing posted by a recruiter on behalf of a client is NOT agency work — judge the employer, not the poster."
+# on_unknown = "pass"
+
+# Priority tiers rank the apply set (which to do first). A listing lands in the
+# earliest tier whose titles match its title OR whose substances match its
+# extracted role_substance (substance beats title — a Staff-titled founding role
+# lands in your founding tier). unknown_penalty demotes a listing within its tier
+# (and trims the derived fit) for every gate that couldn't be verified.
+#
+# [[priority.tiers]]
+# name = "T1"
+# titles = ["VP of Engineering", "Head of Engineering"]
+# substances = ["leadership"]
+#
+# [[priority.tiers]]
+# name = "T2"
+# titles = ["Founding Engineer"]
+# substances = ["founding"]
+#
+# [priority]
+# unknown_penalty = 2
 
 # --- sources ---
 # Each [[sources]] entry defines one job board / feed to scrape.

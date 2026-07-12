@@ -49,12 +49,20 @@ class Listing(BaseModel):
 class Score(BaseModel):
     id: int | None = None
     listing_id: int
+    # DEPRECATED migration glue: derived from decision/tier by the gated scorer,
+    # judged directly only by the legacy additive scorer. apply <=> fit_score >= 70.
     fit_score: int
     rationale: str
     flags: list[str] = Field(default_factory=list)
     breakdown: dict[str, int] = Field(default_factory=dict)
     model: str
     tier: str  # "bulk" | "deep"
+    # First-class assessment fields (gated scorer). Empty/None on legacy rows
+    # until the store backfills decision from fit_score.
+    decision: str = ""  # "apply" | "no" | "" (unassessed legacy row)
+    priority: int | None = None  # sort key within the apply set; lower = do first
+    tier_label: str = ""  # "T1".."T4" | "none" | "" (distinct from bulk/deep tier)
+    gate_results: list[dict[str, Any]] = Field(default_factory=list)
     scored_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 

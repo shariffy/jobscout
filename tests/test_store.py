@@ -128,3 +128,74 @@ def test_list_listings_min_fit(store):
     results = store.list_listings(min_fit=70)
     assert len(results) == 1
     assert results[0]["title"] == "High fit"
+
+
+def test_gated_score_round_trip(store):
+    listing, _ = store.upsert_listing(make_listing())
+    gate_results = [{"name": "office", "status": "pass", "reason": "2 <= 3",
+                     "evidence": "2 days/week", "confidence": 1.0}]
+    score = Score(
+        listing_id=listing.id, fit_score=96, rationale="APPLY T1", flags=[],
+        model="test/model", tier="bulk",
+        decision="apply", priority=2, tier_label="T1", gate_results=gate_results,
+    )
+    store.insert_score(score)
+
+    best = store.get_best_score(listing.id)
+    assert best.decision == "apply"
+    assert best.priority == 2
+    assert best.tier_label == "T1"
+    assert best.gate_results == gate_results
+
+
+def test_legacy_score_gets_fit_derived_decision(store):
+    """Additive scores carry no decision; the store derives it from fit >= 70."""
+    listing, _ = store.upsert_listing(make_listing())
+    hi = store.insert_score(Score(listing_id=listing.id, fit_score=82, rationale="",
+                                  model="m", tier="bulk"))
+    assert hi.decision == "apply"
+
+    other, _ = store.upsert_listing(make_listing(title="Other role"))
+    lo = store.insert_score(Score(listing_id=other.id, fit_score=40, rationale="",
+                                  model="m", tier="bulk"))
+    assert lo.decision == "no"
+
+
+def test_migration_backfills_pre_gated_db(tmp_path):
+    """Opening a DB created before the gated columns adds them and backfills
+    decision from the fit >= 70 shortlist convention."""
+    import sqlite3
+
+    db = tmp_path / "old.db"
+    conn = sqlite3.connect(db)
+    conn.executescript("""
+        CREATE TABLE listings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, hash TEXT NOT NULL UNIQUE,
+            source_name TEXT NOT NULL, title TEXT NOT NULL, company TEXT NOT NULL,
+            location TEXT NOT NULL DEFAULT '', url TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '', raw TEXT NOT NULL DEFAULT '{}',
+            fetched_at TEXT NOT NULL
+        );
+        CREATE TABLE scores (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            listing_id INTEGER NOT NULL REFERENCES listings(id),
+            fit_score INTEGER NOT NULL, rationale TEXT NOT NULL DEFAULT '',
+            flags TEXT NOT NULL DEFAULT '[]', breakdown TEXT NOT NULL DEFAULT '{}',
+            model TEXT NOT NULL, tier TEXT NOT NULL, scored_at TEXT NOT NULL
+        );
+        INSERT INTO listings (hash, source_name, title, company, url, fetched_at)
+            VALUES ('h1', 's', 'Role', 'Co', 'https://x.test/1', '2026-01-01T00:00:00+00:00');
+        INSERT INTO scores (listing_id, fit_score, model, tier, scored_at)
+            VALUES (1, 85, 'm', 'bulk', '2026-01-01T00:00:00+00:00'),
+                   (1, 55, 'm', 'bulk', '2026-01-01T00:00:00+00:00');
+    """)
+    conn.commit()
+    conn.close()
+
+    with Store(db) as s:
+        rows = s.conn.execute("SELECT fit_score, decision FROM scores ORDER BY fit_score").fetchall()
+        assert [(r["fit_score"], r["decision"]) for r in rows] == [(55, "no"), (85, "apply")]
+        best = s.get_best_score(1)
+        assert best.decision == "apply"
+        assert best.priority is None
+        assert best.gate_results == []

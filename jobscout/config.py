@@ -7,6 +7,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from .gates import GateConfig, PriorityConfig
+
 
 class ProfileConfig(BaseModel):
     cv_path: str = "cv.pdf"
@@ -28,6 +30,14 @@ class AIConfig(BaseModel):
     # Optional OpenRouter reasoning config for the bulk model, passed through
     # verbatim, e.g. {"effort": "low"} or {"enabled": false}. None = provider default.
     bulk_reasoning: dict[str, Any] | None = None
+    # Which producer scores listings: "additive" = single 0-100 fit judged by the
+    # LLM (legacy); "gated" = LLM extracts facts, Python decides apply/no + priority
+    # from [[gates]] and [priority] (fit_score becomes a derived compat number).
+    scorer: Literal["additive", "gated"] = "additive"
+    # Self-consistency for the gated scorer: extract this many times per listing and
+    # take the majority decision. >1 trades cost/latency for decision stability — the
+    # lever that lets a cheaper, less-deterministic bulk_model match a stronger one.
+    scorer_repeats: int = 1
     fit_threshold: int = 70
 
     @model_validator(mode="after")
@@ -121,6 +131,8 @@ class Config(BaseModel):
     notion: NotionConfig = Field(default_factory=NotionConfig)
     store: StoreConfig = Field(default_factory=StoreConfig)
     scoring: ScoringConfig = Field(default_factory=ScoringConfig)
+    gates: list[GateConfig] = Field(default_factory=list)
+    priority: PriorityConfig = Field(default_factory=PriorityConfig)
     sources: list[SourceConfig] = Field(default_factory=list)
 
 

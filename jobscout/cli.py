@@ -23,6 +23,23 @@ def _load(config: str | None):
     return load_config(config)
 
 
+def _verdict(score, cfg) -> str:
+    """One-line rich markup for a fresh score: APPLY/NO + tier for gated
+    assessments, the plain fit number for legacy additive ones."""
+    if score.tier_label or score.gate_results:  # produced by the gated scorer
+        if score.decision == "apply":
+            tier = f" {score.tier_label}" if score.tier_label not in ("", "none") else ""
+            return f"[green]APPLY{tier}[/] [dim](fit {score.fit_score})[/]"
+        failed = ", ".join(
+            f.removeprefix("gate-fail-") for f in score.flags if f.startswith("gate-fail-")
+        )
+        return f"[red]NO[/] ({failed})" if failed else "[red]NO[/]"
+    color = "green" if score.fit_score >= cfg.ai.fit_threshold else (
+        "yellow" if score.fit_score >= 50 else "red"
+    )
+    return f"[{color}]{score.fit_score:3d}[/]"
+
+
 def _notion(cfg) -> "NotionSync":
     from .notion_sync import NotionSync
     if not cfg.notion.token:
@@ -171,15 +188,15 @@ def scan(
                 console.print("[dim]Skipping scoring (--no-score).[/]")
             return
 
+        from .assess import build_scorer
         from .profile import build_profile
-        from .scoring import BulkScorer
 
         if not Path("candidate_profile.json").exists():
             console.print("[yellow]No candidate_profile.json — run [bold]jobscout profile[/] first.[/]")
             return
 
         profile_obj = build_profile(cfg)
-        scorer = BulkScorer(cfg, profile_obj)
+        scorer = build_scorer(cfg, profile_obj)
 
         console.print(f"\n[bold]Scoring[/] {len(new_listings)} new listing(s) with {cfg.ai.bulk_model}…\n")
 
@@ -189,10 +206,7 @@ def scan(
                 score = scorer.score(listing)
                 store.insert_score(score)
                 scored += 1
-                color = "green" if score.fit_score >= cfg.ai.fit_threshold else (
-                    "yellow" if score.fit_score >= 50 else "red"
-                )
-                console.print(f"  [{color}]{score.fit_score:3d}[/]  {listing.title} @ {listing.company}")
+                console.print(f"  {_verdict(score, cfg)}  {listing.title} @ {listing.company}")
             except Exception as exc:
                 console.print(f"  [red]error scoring {listing.id}:[/] {exc}")
 
@@ -395,6 +409,8 @@ def list_jobs(
     table = Table(show_header=True, header_style="bold", box=None, pad_edge=False)
     table.add_column("ID", style="dim", width=5)
     table.add_column("Fit", justify="right", width=4)
+    table.add_column("Decision", width=9)
+    table.add_column("Tier", width=4)
     table.add_column("Title", min_width=30)
     table.add_column("Company", min_width=20)
     table.add_column("Location")
@@ -402,9 +418,16 @@ def list_jobs(
 
     for r in rows:
         fit = str(r["fit_score"]) if r.get("fit_score") is not None else "—"
+        decision = r.get("decision") or "—"
+        if decision == "apply":
+            decision = "[green]apply[/]"
+        elif decision == "no":
+            decision = "[red]no[/]"
         table.add_row(
             str(r["id"]),
             fit,
+            decision,
+            r.get("tier_label") or "—",
             r["title"],
             r["company"],
             r.get("location") or "",
@@ -425,9 +448,9 @@ def rescore(
     """Re-score listings with the current profile, fetching full JD from the listing URL."""
     import httpx
     from bs4 import BeautifulSoup
-    from .sources.http_source import _extract_jd
+    from .assess import build_scorer
     from .profile import build_profile
-    from .scoring import BulkScorer
+    from .sources.http_source import _extract_jd
 
     cfg = _load(config)
 
@@ -440,7 +463,7 @@ def rescore(
         raise typer.Exit(1)
 
     profile_obj = build_profile(cfg)
-    scorer = BulkScorer(cfg, profile_obj)
+    scorer = build_scorer(cfg, profile_obj)
 
     ns = None
     if cfg.notion.token and cfg.notion.database_id:
@@ -497,12 +520,7 @@ def rescore(
                 score = scorer.score(listing_with_jd)
                 store.conn.execute("DELETE FROM scores WHERE listing_id = ?", (lid,))
                 store.insert_score(score)
-                color = "green" if score.fit_score >= cfg.ai.fit_threshold else (
-                    "yellow" if score.fit_score >= 50 else "red"
-                )
-                console.print(
-                    f"  [{color}]{score.fit_score:3d}[/]  {listing.title} @ {listing.company}"
-                )
+                console.print(f"  {_verdict(score, cfg)}  {listing.title} @ {listing.company}")
                 if score.rationale:
                     console.print(f"       [dim]{score.rationale}[/]")
             except Exception as exc:
@@ -513,12 +531,7 @@ def rescore(
             app_row = store.get_application(lid)
             if app_row and app_row.notion_page_id and ns and app_row.status != "not_interested":
                 try:
-                    from typing import Any
-                    props: dict[str, Any] = {"Fit": {"number": score.fit_score}}
-                    if score.flags:
-                        props["Flags"] = {"rich_text": [{"text": {"content": ", ".join(score.flags)[:2000]}}]}
-                    ns._patch(f"/pages/{app_row.notion_page_id}", {"properties": props})
-                    ns.update_score_callout(app_row.notion_page_id, score)
+                    ns.update_score(app_row.notion_page_id, score)
                     console.print(f"       [dim]Notion updated.[/]")
                 except Exception as exc:
                     console.print(f"       [yellow]Notion update failed: {exc}[/]")
@@ -570,11 +583,11 @@ def watch(
     import time
     import httpx as _httpx
     from bs4 import BeautifulSoup as _BS
+    from .assess import build_scorer
     from .models import Application
     from .notion_sync import NotionSync
     from .prep import generate_prep
     from .profile import build_profile
-    from .scoring import BulkScorer
     from .sources.http_source import _extract_jd
 
     cfg = _load(config)
@@ -627,7 +640,7 @@ def watch(
 
                     elif action == "Rescore":
                         profile_obj = build_profile(cfg)
-                        scorer = BulkScorer(cfg, profile_obj)
+                        scorer = build_scorer(cfg, profile_obj)
                         try:
                             resp = _httpx.get(listing.url, headers={"User-Agent": _ua}, follow_redirects=True, timeout=20)
                             jd = _extract_jd(_BS(resp.text, "html.parser"))
@@ -639,10 +652,9 @@ def watch(
                         store.conn.commit()
                         score = scorer.score(listing)
                         store.insert_score(score)
-                        ns._patch(f"/pages/{page_id}", {"properties": {"Fit": {"number": score.fit_score}}})
-                        ns.update_score_callout(page_id, score)
+                        ns.update_score(page_id, score)
                         ns.reset_action(page_id)
-                        console.print(f"    [dim]rescored → {score.fit_score}[/]")
+                        console.print(f"    [dim]rescored → {_verdict(score, cfg)}[/]")
 
                     elif action == "Prep":
                         profile_obj = build_profile(cfg)
