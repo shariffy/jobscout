@@ -14,16 +14,29 @@ class ProfileConfig(BaseModel):
 
 
 class AIConfig(BaseModel):
-    anthropic_api_key: str = Field(default="")
-    bulk_model: str = "claude-haiku-4-5"
-    deep_model: str = "claude-sonnet-4-6"
-    prep_model: str = "claude-sonnet-4-6"
+    # Every model call (bulk scoring, profile extraction, prep briefs) goes through
+    # OpenRouter, so a single key powers the whole app. It resolves from
+    # ai.openrouter_api_key or the OPEN_ROUTER_API_KEY / OPENROUTER_API_KEY env vars.
+    openrouter_api_key: str = Field(default="")
+    # All three are OpenRouter model slugs (provider/model[:variant]), e.g.
+    # "anthropic/claude-haiku-4-5", "google/gemini-3.5-flash",
+    # "qwen/qwen3-next-80b-a3b-instruct:free". Use a cheap one for bulk scoring
+    # (runs on every listing) and stronger ones for deep/prep.
+    bulk_model: str = "anthropic/claude-haiku-4-5"
+    deep_model: str = "anthropic/claude-sonnet-4-6"
+    prep_model: str = "anthropic/claude-sonnet-4-6"
+    # Optional OpenRouter reasoning config for the bulk model, passed through
+    # verbatim, e.g. {"effort": "low"} or {"enabled": false}. None = provider default.
+    bulk_reasoning: dict[str, Any] | None = None
     fit_threshold: int = 70
 
     @model_validator(mode="after")
     def resolve_api_key(self) -> AIConfig:
-        if not self.anthropic_api_key:
-            self.anthropic_api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if not self.openrouter_api_key:
+            self.openrouter_api_key = (
+                os.environ.get("OPEN_ROUTER_API_KEY", "")
+                or os.environ.get("OPENROUTER_API_KEY", "")
+            )
         return self
 
 

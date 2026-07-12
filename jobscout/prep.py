@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import anthropic
-
 from .config import Config
+from .llm import openrouter_client, with_retries
 from .models import CandidateProfile, Listing, Score
 from .scoring import _listing_text, _profile_text
 
@@ -58,21 +57,27 @@ def generate_prep(
     profile: CandidateProfile,
     score: Score | None = None,
 ) -> str:
-    client = anthropic.Anthropic(api_key=cfg.ai.anthropic_api_key)
+    client = openrouter_client(cfg)
 
     user_content = f"Candidate profile:\n{_profile_text(profile)}\n\n---\n\nJob listing:\n{_listing_text(listing)}"
     if score:
         user_content += f"\n\nFit score: {score.fit_score}/100 — {score.rationale}"
 
-    response = client.messages.create(
-        model=cfg.ai.prep_model,
-        max_tokens=6000,
-        system=_SYSTEM,
-        tools=[{"type": "web_search_20260209", "name": "web_search"}],
-        messages=[{"role": "user", "content": user_content}],
+    # OpenRouter's server-side web_search tool works with any model: the model
+    # decides when to search, OpenRouter runs it, and the grounded answer comes
+    # back in message.content. Passed via extra_body so the OpenRouter-specific
+    # tool type isn't touched by the OpenAI SDK's tool validation.
+    response = with_retries(
+        lambda: client.chat.completions.create(
+            model=cfg.ai.prep_model,
+            max_tokens=6000,
+            messages=[
+                {"role": "system", "content": _SYSTEM},
+                {"role": "user", "content": user_content},
+            ],
+            extra_body={"tools": [{"type": "openrouter:web_search"}]},
+        ),
+        label=cfg.ai.prep_model,
     )
 
-    # Collect all text blocks (web search results are tool_result blocks, skip them)
-    return "\n\n".join(
-        block.text for block in response.content if block.type == "text"
-    )
+    return (response.choices[0].message.content or "") if response.choices else ""

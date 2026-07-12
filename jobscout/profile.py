@@ -3,10 +3,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import anthropic
 from pypdf import PdfReader
 
 from .config import Config
+from .llm import openrouter_client, with_retries
 from .models import CandidateProfile
 
 _CACHE_FILENAME = "candidate_profile.json"
@@ -59,17 +59,22 @@ def build_profile(cfg: Config, force: bool = False) -> CandidateProfile:
 
     user_prompt = f"## CV\n\n{cv_text}\n\n## Candidate's stated goals\n\n{goals}"
 
-    client = anthropic.Anthropic(api_key=cfg.ai.anthropic_api_key)
-    response = client.messages.create(
-        model=cfg.ai.deep_model,
-        max_tokens=4096,
-        system=_SYSTEM,
-        messages=[{"role": "user", "content": user_prompt}],
+    client = openrouter_client(cfg)
+    response = with_retries(
+        lambda: client.chat.completions.create(
+            model=cfg.ai.deep_model,
+            max_tokens=4096,
+            messages=[
+                {"role": "system", "content": _SYSTEM},
+                {"role": "user", "content": user_prompt},
+            ],
+        ),
+        label=cfg.ai.deep_model,
     )
 
-    # Take the first text block — reasoning models emit a thinking block first,
-    # so content[0] isn't necessarily the answer.
-    raw = next((b.text for b in response.content if getattr(b, "type", None) == "text"), "").strip()
+    # Reasoning models keep their thinking in a separate field; the answer is in
+    # message.content.
+    raw = ((response.choices[0].message.content or "") if response.choices else "").strip()
     # Strip an accidental markdown fence, then decode the first JSON object,
     # tolerating any trailing prose the model may append.
     if raw.startswith("```"):
@@ -82,7 +87,7 @@ def build_profile(cfg: Config, force: bool = False) -> CandidateProfile:
         data, _ = json.JSONDecoder().raw_decode(raw[start:])
     else:
         data = json.loads(raw)
-    # Inject raw goals if Claude didn't copy them
+    # Inject raw goals if the model didn't copy them
     if not data.get("raw_goals") and goals:
         data["raw_goals"] = goals
 

@@ -3,9 +3,8 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 
-import anthropic
-
 from .config import Config
+from .llm import openrouter_client, with_retries
 from .models import CandidateProfile, Listing, Score
 
 _SYSTEM_TEMPLATE = """\
@@ -17,8 +16,8 @@ Return ONLY a JSON object — no markdown, no prose — exactly:
 {{
   "fit_score": <integer 0-100>,
   "breakdown": {{
-    "title": <0 to +{w_title} — score by how the role's title ranks among the candidate's preferred titles. If the candidate gives a ranked list, a top-ranked title scores near +{w_title}, a mid-ranked one about half, and a title at the bottom of the list or absent from it scores low (a quarter of +{w_title} or less). Do NOT give a bottom-ranked or non-preferred title more than half of +{w_title}>,
-    "scope": <0 to +{w_scope} — judge against the CAREER TRACK the candidate wants (see the Track rule below), not just autonomy. Highest when the role is on the candidate's desired track at the level they want. Deduct toward 0 when the role is over-scoped (materially more scale/leadership than they have held) OR off-track (e.g. an individual-contributor role when the candidate wants a leadership role, or vice versa) — a role can offer strong technical autonomy and still be a scope mismatch>,
+    "title": <0 to +{w_title} — score by how the role matches the candidate's preferred titles, grouped into TIERS of preference rather than by strict linear position in a ranked list. A role in the candidate's top tier scores near +{w_title}; each lower tier steps down; a title the candidate ranks at the bottom or does not want scores low. Use the candidate's own stated tiers and exceptions from the profile to decide the tier, and judge the role's SUBSTANCE, not just its literal title (see the Title substance rule below)>,
+    "scope": <0 to +{w_scope} — judge against the CAREER TRACK and level the candidate wants (see the Track rule below), not just autonomy. Highest when the role is on the candidate's desired track at a level they want; deduct toward 0 when the role is over-scoped (materially more scale/leadership than they have held) or off-track — e.g. a pure individual-contributor role for a leadership-seeking candidate, or pure people-management for a committed IC — even if it offers strong technical autonomy. Do NOT use this term for a wrong FUNCTION or a confirmed profile dealbreaker — those go through the dealbreakers term>,
     "company": <0 to +{w_company} — highest when company size, stage, and type match the candidate's stated preferences; lower for clear mismatches>,
     "stack": <0 to +{w_stack} — how well the skills, tools, or qualifications the role requires match the candidate's. Highest for strong/explicit overlap; low for a different-but-transferable background; near 0 for no overlap. If the role hard-requires a specific skill the candidate clearly lacks and it is central to the job (not just "a plus"), keep this low and flag skills-mismatch-required>,
     "domain": <-{w_domain} to 0 — 0 for the candidate's preferred domains OR any neutral domain where someone with their background succeeds without specialist knowledge (default to 0 unless there is a specific reason not to); a moderate negative for a domain the candidate has reason to avoid or that needs real specialist adaptation; the largest negative only when the role explicitly gates on domain experience the candidate lacks>,
@@ -30,7 +29,11 @@ Return ONLY a JSON object — no markdown, no prose — exactly:
   "flags": ["<short tag>", ...]
 }}
 
-The fit_score must equal 50 + sum of all breakdown values (capped at 0–100).
+The fit_score MUST equal 50 + sum of all breakdown values (capped at 0–100). This is the single
+source of truth: express EVERY judgement through the breakdown terms — use a low scope for an
+off-track role, and the dealbreakers term for a disqualifying mismatch. Do NOT adjust fit_score on a
+holistic hunch that disagrees with the sum; if a role feels fundamentally wrong, make a breakdown term
+carry that, don't override the total.
 
 Scoring guide:
 - 95-100: Exceptional — reserve for roles where EVERY positive is near-maximum and no negative
@@ -59,19 +62,33 @@ Location and office presence:
   penalty unless the listing states more than N days or names additional mandatory in-office
   expectations — a strong role must not be tanked by an at-maximum office requirement.
 
-Career track (leadership vs individual contributor):
-- Infer from the candidate's preferred/ranked titles whether they primarily want a leadership/management
-  track (Head, Director, VP, Engineering Manager) or an individual-contributor track (Staff, Principal,
-  Senior Engineer). Score BOTH title and scope relative to that track.
-- If the candidate wants a leadership track, an individual-contributor role (Staff/Principal/Senior
-  engineer, or a "Tech Lead" with no team, direct reports, or roadmap ownership) is a scope mismatch:
-  score scope low — roughly a third of the maximum or less — and flag scope-track-mismatch, even if the
-  role offers strong technical autonomy. Do not award high scope to an IC role for a leadership-seeking
-  candidate just because it is senior or hands-on.
-- Exception: honour any exception the candidate states in their profile. For example, if the candidate
-  says they will accept an IC role at a well-known / top-tier consumer brand, then for such a company
-  treat the IC role as on-track and score scope normally.
-- Apply the reverse for an IC-track candidate faced with a pure people-management role.
+Career track (match the candidate's own tiers and exceptions):
+- Infer the candidate's desired track and their TIERS of preferred roles from the profile (their ranked
+  titles, stated tiers, exceptions, and any roles they explicitly call desirable). Score BOTH title and
+  scope relative to those tiers — not to a generic "leadership vs IC" split.
+- On-track roles (any tier the candidate actually wants, at a level they can do) score HIGH scope.
+  Founding / early-stage roles (e.g. "Founding Engineer", or "Tech Lead" at an early-stage company) are
+  hands-on AND high-ownership 0-to-1 roles; when the candidate's profile says these are desirable, treat
+  them as on-track — score scope high and do NOT flag scope-track-mismatch or treat them as an IC
+  mismatch just because they are hands-on.
+- Off-track roles score LOW scope (roughly a third of the maximum or less) and flag
+  scope-track-mismatch: e.g. a pure individual-contributor role (Staff/Principal/Senior engineer with
+  no team, ownership, or 0-to-1 remit) for a leadership-seeking candidate, or a pure people-management
+  role for a committed IC — even if the role offers strong technical autonomy. The further off-track,
+  the closer to 0.
+- Honour every exception the candidate states. E.g. if they will accept an IC/EM role at a well-known /
+  top-tier consumer brand, treat such a role at such a company as on-track and score scope normally.
+- A wrong FUNCTION (non-engineering role) or a confirmed profile dealbreaker is NOT a scope question —
+  handle it through the dealbreakers term (see below), not by making scope negative.
+
+Title substance (judge the role, not the label):
+- Score by what the role ACTUALLY is, not its literal title. A senior-IC title (e.g. "Staff Engineer",
+  "Principal Engineer", "Senior Engineer") whose substance is a founding / 0-to-1 / new-product role
+  built alongside the founders is a founding-tier role for both title and scope, because that is the
+  work the candidate wants — the "Staff"/"Principal" label is incidental.
+- Conversely, a desirable-sounding title whose substance is off — a "Founding Engineer" that is really
+  pure infrastructure, or a "Head of" role that is really a hands-off manager-of-managers at scale — is
+  scored on its substance, not its label.
 
 Scope and scale:
 - Distinguish total company headcount from team size. Generic growth phrases ("scale the team",
@@ -209,41 +226,48 @@ def _parse_score(text: str) -> dict:
 
 
 class BulkScorer:
-    """Score listings against a candidate profile using Haiku with prompt caching."""
+    """Score listings against a candidate profile via OpenRouter.
+
+    OpenRouter exposes an OpenAI-compatible chat.completions surface, so any model
+    slug it serves (Anthropic, Google, DeepSeek, Qwen, …) works through one client.
+    Configure the slug with ai.bulk_model and optional thinking with ai.bulk_reasoning.
+    """
 
     def __init__(self, cfg: Config, profile: CandidateProfile) -> None:
         self._cfg = cfg
         self._profile = profile
-        self._client = anthropic.Anthropic(api_key=cfg.ai.anthropic_api_key)
+        self._client = openrouter_client(cfg)
         self._system = _build_system(cfg, profile)
+        self._reasoning = cfg.ai.bulk_reasoning
 
     def score(self, listing: Listing) -> Score:
         messages = [
-            {
-                "role": "user",
-                "content": f"Score this listing:\n\n{_listing_text(listing)}",
-            }
+            {"role": "system", "content": self._system},
+            {"role": "user", "content": f"Score this listing:\n\n{_listing_text(listing)}"},
         ]
-        system = [
-            {
-                "type": "text",
-                "text": self._system,
-                "cache_control": {"type": "ephemeral"},
-            }
-        ]
+        # usage.include asks OpenRouter for the real charged cost; reasoning (when
+        # set) controls per-model thinking. Both are passed through extra_body.
+        extra_body: dict = {"usage": {"include": True}}
+        if self._reasoning is not None:
+            extra_body["reasoning"] = self._reasoning
 
         last_exc: Exception | None = None
+        raw = ""
         for attempt in range(2):
-            response = self._client.messages.create(
-                model=self._cfg.ai.bulk_model,
-                max_tokens=4096,
-                system=system,
-                messages=messages,
+            response = with_retries(
+                lambda: self._client.chat.completions.create(
+                    model=self._cfg.ai.bulk_model,
+                    messages=messages,
+                    # Cap the reservation: without it OpenRouter holds the model's
+                    # full 65k output budget against the account balance per call.
+                    max_tokens=4096,
+                    extra_body=extra_body,
+                ),
+                label=self._cfg.ai.bulk_model,
             )
-            # Reasoning models (e.g. Sonnet 5, Opus 4.8) emit a thinking block
-            # before the answer, so content[0] isn't necessarily the text — take
-            # the first text block. Also skips any non-text (tool) blocks.
-            raw = next((b.text for b in response.content if getattr(b, "type", None) == "text"), "")
+            # Reasoning models put their thinking in a separate field; the answer
+            # is always in message.content.
+            raw = (response.choices[0].message.content or "") if response.choices else ""
             try:
                 data = _parse_score(raw)
                 break
