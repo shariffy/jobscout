@@ -136,6 +136,10 @@ migration. See `config.example.toml` for the full config surface and
 `validate_gate.py --scorer gated` for regression-testing gates against roles you
 actually applied to.
 
+For how the gated pipeline came to be and how bulk scoring moved off Sonnet 4.6 to a
+cheaper model without losing quality, see
+[docs/llm-optimization-journey.md](docs/llm-optimization-journey.md).
+
 ## Cost
 
 Every listing is sent to an LLM for scoring, so scans cost money. All calls route
