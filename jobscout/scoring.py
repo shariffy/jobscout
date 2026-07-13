@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 
-from .config import Config
+from .config import Config, assessment_config_hash
 from .llm import openrouter_client, with_retries
 from .models import CandidateProfile, Listing, Score
 
@@ -239,6 +239,7 @@ class BulkScorer:
         self._client = openrouter_client(cfg)
         self._system = _build_system(cfg, profile)
         self._reasoning = cfg.ai.bulk_reasoning
+        self._version = assessment_config_hash(cfg)
 
     def score(self, listing: Listing) -> Score:
         messages = [
@@ -303,6 +304,7 @@ class BulkScorer:
             breakdown=breakdown,
             model=self._cfg.ai.bulk_model,
             tier="bulk",
+            assessment_version=self._version,
             scored_at=datetime.now(UTC),
         )
 

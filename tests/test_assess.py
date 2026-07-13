@@ -510,3 +510,53 @@ def test_gated_scorer_repeats_raises_when_all_fail(mock_extract):
             assert False, "should have raised"
         except RuntimeError:
             pass
+
+
+# --- extraction cache (store-backed) ---------------------------------------------
+
+@patch("jobscout.llm.openai.OpenAI")
+def test_gated_scorer_caches_extraction_to_store(mock_openai_cls, tmp_path):
+    from jobscout.store import Store
+
+    client = MagicMock()
+    mock_openai_cls.return_value = client
+    client.chat.completions.create.return_value = mock_extract_response({
+        "features": {"role_substance": {"value": "leadership", "confidence": 0.9, "evidence": "lead"}},
+        "rules": {"no_agency": {"verdict": "pass", "confidence": 0.9, "evidence": "product"}},
+        "summary": "Head of Eng.",
+    })
+
+    with Store(tmp_path / "cache.db") as store:
+        cfg = make_cfg()
+        scorer = GatedScorer(cfg, store=store)
+        listing, _ = store.upsert_listing(make_listing())
+
+        scorer.score(listing)
+        assert client.chat.completions.create.call_count == 1
+
+        cached = store.get_extraction(listing.id, cfg.ai.bulk_model, scorer._prompt_hash, 0)
+        assert cached is not None
+
+        # A second score() run must hit the cache instead of calling the LLM again.
+        scorer.score(listing)
+        assert client.chat.completions.create.call_count == 1
+
+
+@patch("jobscout.llm.openai.OpenAI")
+def test_gated_scorer_without_store_never_caches(mock_openai_cls, tmp_path):
+    from jobscout.store import Store
+
+    client = MagicMock()
+    mock_openai_cls.return_value = client
+    client.chat.completions.create.return_value = mock_extract_response({
+        "features": {}, "rules": {}, "summary": "s",
+    })
+
+    cfg = make_cfg()
+    listing = make_listing()
+    GatedScorer(cfg).score(listing)  # no store passed
+    GatedScorer(cfg).score(listing)
+    assert client.chat.completions.create.call_count == 2
+
+    with Store(tmp_path / "empty.db") as store:
+        assert store.get_extraction(listing.id, cfg.ai.bulk_model, "anything", 0) is None

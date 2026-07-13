@@ -196,7 +196,7 @@ def scan(
             return
 
         profile_obj = build_profile(cfg)
-        scorer = build_scorer(cfg, profile_obj)
+        scorer = build_scorer(cfg, profile_obj, store)
 
         console.print(f"\n[bold]Scoring[/] {len(new_listings)} new listing(s) with {cfg.ai.bulk_model}…\n")
 
@@ -443,12 +443,17 @@ def rescore(
     listing_ids: list[int] = typer.Argument(default=None, help="Listing IDs to rescore (from jobscout list)"),
     all_listings: bool = typer.Option(False, "--all", help="Rescore every listing in the database"),
     min_fit: int = typer.Option(0, "--min-fit", "-f", help="With --all, only rescore listings scoring at or above this"),
+    force: bool = typer.Option(
+        False, "--force",
+        help="With --all, also rescore listings already scored under the current config",
+    ),
     config: Optional[str] = _CONFIG_OPT,
 ) -> None:
     """Re-score listings with the current profile, fetching full JD from the listing URL."""
     import httpx
     from bs4 import BeautifulSoup
     from .assess import build_scorer
+    from .config import assessment_config_hash
     from .profile import build_profile
     from .sources.http_source import _extract_jd
 
@@ -463,7 +468,7 @@ def rescore(
         raise typer.Exit(1)
 
     profile_obj = build_profile(cfg)
-    scorer = build_scorer(cfg, profile_obj)
+    current_version = assessment_config_hash(cfg)
 
     ns = None
     if cfg.notion.token and cfg.notion.database_id:
@@ -473,28 +478,36 @@ def rescore(
     ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
     with Store(cfg.store.db_path) as store:
+        # Passing store lets the gated scorer serve/save Stage-1 extractions from
+        # the extractions cache instead of re-calling the LLM for a listing whose
+        # model/prompt/reasoning haven't changed since the last rescore.
+        scorer = build_scorer(cfg, profile_obj, store)
+
         if all_listings:
+            sql = """
+                SELECT l.id FROM listings l
+                LEFT JOIN applications a ON a.listing_id = l.id
+                LEFT JOIN scores s ON s.listing_id = l.id
+                WHERE (a.status IS NULL OR a.status != 'not_interested')
+            """
+            params: list = []
             if min_fit:
-                sql = """
-                    SELECT l.id FROM listings l
-                    LEFT JOIN applications a ON a.listing_id = l.id
-                    JOIN (SELECT listing_id, MAX(fit_score) AS fit_score FROM scores GROUP BY listing_id) s
-                        ON s.listing_id = l.id
-                    WHERE s.fit_score >= ?
-                      AND (a.status IS NULL OR a.status != 'not_interested')
-                    ORDER BY l.id
-                """
-                params: list = [min_fit]
-            else:
-                sql = """
-                    SELECT l.id FROM listings l
-                    LEFT JOIN applications a ON a.listing_id = l.id
-                    WHERE (a.status IS NULL OR a.status != 'not_interested')
-                    ORDER BY l.id
-                """
-                params = []
+                sql += " AND s.fit_score >= ?"
+                params.append(min_fit)
+            if not force:
+                # Skip listings already scored under this exact config — the common
+                # case of re-running rescore --all with nothing changed is then free.
+                sql += " AND (s.assessment_version IS NULL OR s.assessment_version != ?)"
+                params.append(current_version)
+            sql += " ORDER BY l.id"
             listing_ids = [r[0] for r in store.conn.execute(sql, params).fetchall()]
             console.print(f"[bold]Rescoring {len(listing_ids)} listings…[/]\n")
+            if not listing_ids:
+                console.print(
+                    "[dim]Nothing to do — every listing already matches the current config. "
+                    "Use --force to rescore anyway.[/]"
+                )
+                return
 
         for lid in listing_ids:
             listing = store.get_listing(lid)
@@ -513,12 +526,15 @@ def rescore(
             except Exception as exc:
                 console.print(f"  [yellow]Could not fetch {listing.url}: {exc}[/]")
 
+            # Persist the enriched JD so a future rescore (gate tweak, model swap)
+            # skips this HTTP fetch and scores from the richer text already on file.
+            if enriched_desc != listing.description:
+                store.update_listing_description(lid, enriched_desc)
             listing_with_jd = listing.model_copy(update={"description": enriched_desc})
 
             # Score first, then replace — so a crash mid-flight leaves the old score intact
             try:
                 score = scorer.score(listing_with_jd)
-                store.conn.execute("DELETE FROM scores WHERE listing_id = ?", (lid,))
                 store.insert_score(score)
                 console.print(f"  {_verdict(score, cfg)}  {listing.title} @ {listing.company}")
                 if score.rationale:
@@ -640,16 +656,15 @@ def watch(
 
                     elif action == "Rescore":
                         profile_obj = build_profile(cfg)
-                        scorer = build_scorer(cfg, profile_obj)
+                        scorer = build_scorer(cfg, profile_obj, store)
                         try:
                             resp = _httpx.get(listing.url, headers={"User-Agent": _ua}, follow_redirects=True, timeout=20)
                             jd = _extract_jd(_BS(resp.text, "html.parser"))
                             if jd and len(jd) > len(listing.description or ""):
+                                store.update_listing_description(lid, jd)
                                 listing = listing.model_copy(update={"description": jd})
                         except Exception:
                             pass
-                        store.conn.execute("DELETE FROM scores WHERE listing_id = ?", (lid,))
-                        store.conn.commit()
                         score = scorer.score(listing)
                         store.insert_score(score)
                         ns.update_score(page_id, score)

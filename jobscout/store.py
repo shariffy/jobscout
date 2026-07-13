@@ -24,19 +24,31 @@ CREATE TABLE IF NOT EXISTS listings (
 );
 
 CREATE TABLE IF NOT EXISTS scores (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    listing_id         INTEGER NOT NULL UNIQUE REFERENCES listings(id) ON DELETE CASCADE,
+    fit_score          INTEGER NOT NULL,
+    rationale          TEXT    NOT NULL DEFAULT '',
+    flags              TEXT    NOT NULL DEFAULT '[]',
+    breakdown          TEXT    NOT NULL DEFAULT '{}',
+    model              TEXT    NOT NULL,
+    tier               TEXT    NOT NULL,
+    decision           TEXT    NOT NULL DEFAULT '',
+    priority           INTEGER,
+    tier_label         TEXT    NOT NULL DEFAULT '',
+    gate_results       TEXT    NOT NULL DEFAULT '[]',
+    assessment_version TEXT    NOT NULL DEFAULT '',
+    scored_at          TEXT    NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS extractions (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    listing_id   INTEGER NOT NULL REFERENCES listings(id),
-    fit_score    INTEGER NOT NULL,
-    rationale    TEXT    NOT NULL DEFAULT '',
-    flags        TEXT    NOT NULL DEFAULT '[]',
-    breakdown    TEXT    NOT NULL DEFAULT '{}',
+    listing_id   INTEGER NOT NULL REFERENCES listings(id) ON DELETE CASCADE,
     model        TEXT    NOT NULL,
-    tier         TEXT    NOT NULL,
-    decision     TEXT    NOT NULL DEFAULT '',
-    priority     INTEGER,
-    tier_label   TEXT    NOT NULL DEFAULT '',
-    gate_results TEXT    NOT NULL DEFAULT '[]',
-    scored_at    TEXT    NOT NULL
+    prompt_hash  TEXT    NOT NULL,
+    repeat_idx   INTEGER NOT NULL DEFAULT 0,
+    extraction   TEXT    NOT NULL,
+    extracted_at TEXT    NOT NULL,
+    UNIQUE(listing_id, model, prompt_hash, repeat_idx)
 );
 
 CREATE TABLE IF NOT EXISTS applications (
@@ -73,6 +85,7 @@ class Store:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.executescript(_SCHEMA)
+        self._conn.commit()
         self._migrate()
         self._conn.commit()
 
@@ -90,6 +103,7 @@ class Store:
             ("priority", "priority INTEGER"),
             ("tier_label", "tier_label TEXT NOT NULL DEFAULT ''"),
             ("gate_results", "gate_results TEXT NOT NULL DEFAULT '[]'"),
+            ("assessment_version", "assessment_version TEXT NOT NULL DEFAULT ''"),
         ]:
             if column not in existing:
                 self.conn.execute(f"ALTER TABLE scores ADD COLUMN {ddl}")
@@ -97,6 +111,98 @@ class Store:
             "UPDATE scores SET decision = CASE WHEN fit_score >= 70 THEN 'apply' ELSE 'no' END "
             "WHERE decision = ''"
         )
+        if self._scores_needs_rebuild():
+            self._rebuild_scores_table()
+
+    def _scores_needs_rebuild(self) -> bool:
+        """True if scores.listing_id lacks ON DELETE CASCADE or a UNIQUE constraint.
+
+        Both are added by the same table rebuild (SQLite can't ALTER a foreign key
+        or add a UNIQUE constraint in place), so one check covers both.
+        """
+        fks = self.conn.execute("PRAGMA foreign_key_list(scores)").fetchall()
+        has_cascade = any(
+            fk["table"] == "listings" and (fk["on_delete"] or "").upper() == "CASCADE"
+            for fk in fks
+        )
+        has_unique_listing_id = False
+        for idx in self.conn.execute("PRAGMA index_list(scores)").fetchall():
+            if not idx["unique"]:
+                continue
+            cols = self.conn.execute(f"PRAGMA index_info({idx['name']})").fetchall()
+            if [c["name"] for c in cols] == ["listing_id"]:
+                has_unique_listing_id = True
+                break
+        return not (has_cascade and has_unique_listing_id)
+
+    def _rebuild_scores_table(self) -> None:
+        """Rebuild scores with ON DELETE CASCADE + UNIQUE(listing_id).
+
+        SQLite can't ALTER a foreign key clause or add a constraint in place, so this
+        copies rows into a freshly-defined table. Dedupes first (keep the newest row
+        per listing_id, ties broken by id) since the UNIQUE constraint requires it.
+        foreign_keys must be off for the RENAME/DROP sequence (SQLite cannot toggle it
+        inside an open transaction, hence the commit before and after).
+        """
+        self.conn.commit()
+        self.conn.execute("PRAGMA foreign_keys=OFF")
+        try:
+            self.conn.execute("BEGIN")
+            self.conn.execute(
+                """
+                DELETE FROM scores WHERE id NOT IN (
+                    SELECT id FROM (
+                        SELECT id, ROW_NUMBER() OVER (
+                            PARTITION BY listing_id ORDER BY scored_at DESC, id DESC
+                        ) AS rn
+                        FROM scores
+                    ) WHERE rn = 1
+                )
+                """
+            )
+            self.conn.execute("ALTER TABLE scores RENAME TO scores_old")
+            self.conn.execute(
+                """
+                CREATE TABLE scores (
+                    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+                    listing_id         INTEGER NOT NULL UNIQUE REFERENCES listings(id) ON DELETE CASCADE,
+                    fit_score          INTEGER NOT NULL,
+                    rationale          TEXT    NOT NULL DEFAULT '',
+                    flags              TEXT    NOT NULL DEFAULT '[]',
+                    breakdown          TEXT    NOT NULL DEFAULT '{}',
+                    model              TEXT    NOT NULL,
+                    tier               TEXT    NOT NULL,
+                    decision           TEXT    NOT NULL DEFAULT '',
+                    priority           INTEGER,
+                    tier_label         TEXT    NOT NULL DEFAULT '',
+                    gate_results       TEXT    NOT NULL DEFAULT '[]',
+                    assessment_version TEXT    NOT NULL DEFAULT '',
+                    scored_at          TEXT    NOT NULL
+                )
+                """
+            )
+            self.conn.execute(
+                """
+                INSERT INTO scores (id, listing_id, fit_score, rationale, flags, breakdown,
+                                     model, tier, decision, priority, tier_label, gate_results,
+                                     assessment_version, scored_at)
+                SELECT id, listing_id, fit_score, rationale, flags, breakdown,
+                       model, tier, decision, priority, tier_label, gate_results,
+                       assessment_version, scored_at
+                FROM scores_old
+                """
+            )
+            self.conn.execute("DROP TABLE scores_old")
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        finally:
+            self.conn.execute("PRAGMA foreign_keys=ON")
+        # One-time reclaim: this rebuild runs once per DB (the constraint check
+        # above short-circuits it thereafter), so VACUUM here is cheap over the
+        # DB's lifetime but returns the space freed by dropping scores_old.
+        self.conn.execute("VACUUM")
 
     def close(self) -> None:
         if self._conn:
@@ -128,12 +234,19 @@ class Store:
     # --- listings ---
 
     def upsert_listing(self, listing: Listing) -> tuple[Listing, bool]:
-        """Insert listing; return (listing_with_id, is_new). Dedups on hash."""
+        """Insert listing; return (listing_with_id, is_new). Dedups on hash.
+
+        A reappearing hash whose new description is richer than what's stored
+        (e.g. a source that fetches full JDs where a prior scan only got a card
+        snippet) refreshes the stored description instead of discarding it.
+        """
         row = self.conn.execute(
-            "SELECT id FROM listings WHERE hash = ?", (listing.hash,)
+            "SELECT id, description FROM listings WHERE hash = ?", (listing.hash,)
         ).fetchone()
 
         if row:
+            if listing.description and len(listing.description) > len(row["description"] or ""):
+                self.update_listing_description(row["id"], listing.description)
             listing = listing.model_copy(update={"id": row["id"]})
             return listing, False
 
@@ -162,18 +275,19 @@ class Store:
         row = self.conn.execute("SELECT * FROM listings WHERE id = ?", (listing_id,)).fetchone()
         return _row_to_listing(row) if row else None
 
+    def update_listing_description(self, listing_id: int, description: str) -> None:
+        self.conn.execute(
+            "UPDATE listings SET description = ? WHERE id = ?", (description, listing_id)
+        )
+        self.conn.commit()
+
     def list_listings(self, min_fit: int | None = None, limit: int = 100) -> list[dict]:
-        """Return listings joined with their best score, optionally filtered by fit."""
+        """Return listings joined with their score, optionally filtered by fit."""
         sql = """
             SELECT l.*, s.fit_score, s.rationale, s.flags, s.tier,
                    s.decision, s.priority, s.tier_label
             FROM listings l
-            LEFT JOIN (
-                SELECT listing_id, MAX(fit_score) AS fit_score, rationale, flags, tier,
-                       decision, priority, tier_label
-                FROM scores
-                GROUP BY listing_id
-            ) s ON s.listing_id = l.id
+            LEFT JOIN scores s ON s.listing_id = l.id
         """
         params: list = []
         if min_fit is not None:
@@ -197,14 +311,30 @@ class Store:
     # --- scores ---
 
     def insert_score(self, score: Score) -> Score:
+        """Upsert the score for score.listing_id — one row per listing (UNIQUE
+        constraint), so a rescore replaces the prior score instead of appending."""
         # Legacy additive scores carry no decision; store the fit-derived one so
         # decision-based queries see every row.
         decision = score.decision or ("apply" if score.fit_score >= 70 else "no")
-        cur = self.conn.execute(
+        self.conn.execute(
             """
             INSERT INTO scores (listing_id, fit_score, rationale, flags, breakdown, model, tier,
-                                decision, priority, tier_label, gate_results, scored_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                decision, priority, tier_label, gate_results, assessment_version,
+                                scored_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(listing_id) DO UPDATE SET
+                fit_score=excluded.fit_score,
+                rationale=excluded.rationale,
+                flags=excluded.flags,
+                breakdown=excluded.breakdown,
+                model=excluded.model,
+                tier=excluded.tier,
+                decision=excluded.decision,
+                priority=excluded.priority,
+                tier_label=excluded.tier_label,
+                gate_results=excluded.gate_results,
+                assessment_version=excluded.assessment_version,
+                scored_at=excluded.scored_at
             """,
             (
                 score.listing_id,
@@ -218,18 +348,51 @@ class Store:
                 score.priority,
                 score.tier_label,
                 json.dumps(score.gate_results),
+                score.assessment_version,
                 _dt(score.scored_at),
             ),
         )
         self.conn.commit()
-        return score.model_copy(update={"id": cur.lastrowid, "decision": decision})
+        row = self.conn.execute(
+            "SELECT id FROM scores WHERE listing_id = ?", (score.listing_id,)
+        ).fetchone()
+        return score.model_copy(update={"id": row["id"], "decision": decision})
 
     def get_best_score(self, listing_id: int) -> Score | None:
         row = self.conn.execute(
-            "SELECT * FROM scores WHERE listing_id = ? ORDER BY fit_score DESC LIMIT 1",
-            (listing_id,),
+            "SELECT * FROM scores WHERE listing_id = ?", (listing_id,)
         ).fetchone()
         return _row_to_score(row) if row else None
+
+    # --- extractions (Stage-1 cache) ---
+
+    def save_extraction(
+        self, listing_id: int, model: str, prompt_hash: str, repeat_idx: int, extraction_json: str
+    ) -> None:
+        """Cache one Stage-1 extraction, keyed so a model/prompt/reasoning change
+        (a different prompt_hash) naturally misses instead of serving a stale value."""
+        self.conn.execute(
+            """
+            INSERT INTO extractions (listing_id, model, prompt_hash, repeat_idx, extraction, extracted_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(listing_id, model, prompt_hash, repeat_idx) DO UPDATE SET
+                extraction=excluded.extraction, extracted_at=excluded.extracted_at
+            """,
+            (listing_id, model, prompt_hash, repeat_idx, extraction_json, _dt(datetime.now(UTC))),
+        )
+        self.conn.commit()
+
+    def get_extraction(
+        self, listing_id: int, model: str, prompt_hash: str, repeat_idx: int
+    ) -> str | None:
+        row = self.conn.execute(
+            """
+            SELECT extraction FROM extractions
+            WHERE listing_id = ? AND model = ? AND prompt_hash = ? AND repeat_idx = ?
+            """,
+            (listing_id, model, prompt_hash, repeat_idx),
+        ).fetchone()
+        return row["extraction"] if row else None
 
     # --- applications ---
 
@@ -303,15 +466,12 @@ class Store:
         return [dict(r) for r in rows]
 
     def shortlist_candidates(self, min_fit: int) -> list[dict]:
-        """Listings with best fit >= min_fit that don't yet have an application row."""
+        """Listings with fit >= min_fit that don't yet have an application row."""
         rows = self.conn.execute(
             """
             SELECT l.*, s.fit_score, s.rationale, s.flags
             FROM listings l
-            JOIN (
-                SELECT listing_id, MAX(fit_score) AS fit_score, rationale, flags
-                FROM scores GROUP BY listing_id
-            ) s ON s.listing_id = l.id
+            JOIN scores s ON s.listing_id = l.id
             WHERE s.fit_score >= ?
             AND NOT EXISTS (SELECT 1 FROM applications a WHERE a.listing_id = l.id)
             ORDER BY s.fit_score DESC

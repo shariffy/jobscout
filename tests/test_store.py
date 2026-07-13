@@ -162,8 +162,10 @@ def test_legacy_score_gets_fit_derived_decision(store):
 
 
 def test_migration_backfills_pre_gated_db(tmp_path):
-    """Opening a DB created before the gated columns adds them and backfills
-    decision from the fit >= 70 shortlist convention."""
+    """Opening a DB created before the gated columns and the scores
+    UNIQUE(listing_id) constraint adds the new columns, backfills decision from
+    the fit >= 70 shortlist convention, and dedupes down to the newest score
+    per listing (ties broken by id) to satisfy the new constraint."""
     import sqlite3
 
     db = tmp_path / "old.db"
@@ -186,16 +188,141 @@ def test_migration_backfills_pre_gated_db(tmp_path):
         INSERT INTO listings (hash, source_name, title, company, url, fetched_at)
             VALUES ('h1', 's', 'Role', 'Co', 'https://x.test/1', '2026-01-01T00:00:00+00:00');
         INSERT INTO scores (listing_id, fit_score, model, tier, scored_at)
-            VALUES (1, 85, 'm', 'bulk', '2026-01-01T00:00:00+00:00'),
-                   (1, 55, 'm', 'bulk', '2026-01-01T00:00:00+00:00');
+            VALUES (1, 55, 'm', 'bulk', '2026-01-01T00:00:00+00:00'),
+                   (1, 85, 'm', 'bulk', '2026-01-02T00:00:00+00:00');
     """)
     conn.commit()
     conn.close()
 
     with Store(db) as s:
-        rows = s.conn.execute("SELECT fit_score, decision FROM scores ORDER BY fit_score").fetchall()
-        assert [(r["fit_score"], r["decision"]) for r in rows] == [(55, "no"), (85, "apply")]
+        rows = s.conn.execute("SELECT fit_score, decision FROM scores").fetchall()
+        assert [(r["fit_score"], r["decision"]) for r in rows] == [(85, "apply")]
         best = s.get_best_score(1)
         assert best.decision == "apply"
         assert best.priority is None
         assert best.gate_results == []
+
+
+def test_migration_adds_cascade_and_unique_constraint(tmp_path):
+    """A pre-existing DB (no CASCADE, no UNIQUE on scores.listing_id) is rebuilt
+    to have both on open."""
+    import sqlite3
+
+    db = tmp_path / "old2.db"
+    conn = sqlite3.connect(db)
+    conn.executescript("""
+        CREATE TABLE listings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, hash TEXT NOT NULL UNIQUE,
+            source_name TEXT NOT NULL, title TEXT NOT NULL, company TEXT NOT NULL,
+            location TEXT NOT NULL DEFAULT '', url TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '', raw TEXT NOT NULL DEFAULT '{}',
+            fetched_at TEXT NOT NULL
+        );
+        CREATE TABLE scores (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            listing_id INTEGER NOT NULL REFERENCES listings(id),
+            fit_score INTEGER NOT NULL, rationale TEXT NOT NULL DEFAULT '',
+            flags TEXT NOT NULL DEFAULT '[]', breakdown TEXT NOT NULL DEFAULT '{}',
+            model TEXT NOT NULL, tier TEXT NOT NULL, scored_at TEXT NOT NULL
+        );
+    """)
+    conn.commit()
+    conn.close()
+
+    with Store(db) as s:
+        fks = s.conn.execute("PRAGMA foreign_key_list(scores)").fetchall()
+        assert any(fk["table"] == "listings" and fk["on_delete"] == "CASCADE" for fk in fks)
+        indexes = s.conn.execute("PRAGMA index_list(scores)").fetchall()
+        assert any(idx["unique"] for idx in indexes)
+
+
+def test_score_cascade_deletes_with_listing(store):
+    listing, _ = store.upsert_listing(make_listing())
+    store.insert_score(Score(listing_id=listing.id, fit_score=80, rationale="", model="m", tier="bulk"))
+
+    store.conn.execute("DELETE FROM listings WHERE id = ?", (listing.id,))
+    store.conn.commit()
+
+    assert store.get_best_score(listing.id) is None
+    row = store.conn.execute("SELECT COUNT(*) c FROM scores WHERE listing_id = ?", (listing.id,)).fetchone()
+    assert row["c"] == 0
+
+
+def test_insert_score_upserts_one_row_per_listing(store):
+    listing, _ = store.upsert_listing(make_listing())
+    store.insert_score(Score(listing_id=listing.id, fit_score=40, rationale="first", model="m", tier="bulk"))
+    store.insert_score(Score(listing_id=listing.id, fit_score=90, rationale="second", model="m", tier="bulk"))
+
+    rows = store.conn.execute("SELECT fit_score, rationale FROM scores WHERE listing_id = ?", (listing.id,)).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["fit_score"] == 90
+    assert rows[0]["rationale"] == "second"
+
+
+def test_upsert_listing_refreshes_richer_description(store):
+    a, is_new = store.upsert_listing(make_listing(description="short"))
+    assert is_new is True
+
+    b, is_new2 = store.upsert_listing(make_listing(description="a much longer and richer description"))
+    assert is_new2 is False
+    assert b.id == a.id
+
+    fetched = store.get_listing(a.id)
+    assert fetched.description == "a much longer and richer description"
+
+
+def test_upsert_listing_keeps_existing_when_new_description_shorter(store):
+    store.upsert_listing(make_listing(description="a much longer and richer description"))
+    store.upsert_listing(make_listing(description="short"))
+
+    fetched = store.get_listing(1)
+    assert fetched.description == "a much longer and richer description"
+
+
+def test_update_listing_description(store):
+    listing, _ = store.upsert_listing(make_listing(description="short"))
+    store.update_listing_description(listing.id, "enriched full JD text")
+    assert store.get_listing(listing.id).description == "enriched full JD text"
+
+
+def test_score_round_trip_includes_assessment_version(store):
+    listing, _ = store.upsert_listing(make_listing())
+    store.insert_score(Score(
+        listing_id=listing.id, fit_score=80, rationale="", model="m", tier="bulk",
+        assessment_version="abc123",
+    ))
+    best = store.get_best_score(listing.id)
+    assert best.assessment_version == "abc123"
+
+
+def test_extraction_cache_round_trip(store):
+    listing, _ = store.upsert_listing(make_listing())
+    assert store.get_extraction(listing.id, "model-a", "hash-a", 0) is None
+
+    store.save_extraction(listing.id, "model-a", "hash-a", 0, '{"features": {}, "rules": {}}')
+    cached = store.get_extraction(listing.id, "model-a", "hash-a", 0)
+    assert cached == '{"features": {}, "rules": {}}'
+
+    # a different model/prompt/repeat is a separate cache entry
+    assert store.get_extraction(listing.id, "model-b", "hash-a", 0) is None
+    assert store.get_extraction(listing.id, "model-a", "hash-a", 1) is None
+
+
+def test_extraction_cache_overwrite(store):
+    listing, _ = store.upsert_listing(make_listing())
+    store.save_extraction(listing.id, "model-a", "hash-a", 0, '{"v": 1}')
+    store.save_extraction(listing.id, "model-a", "hash-a", 0, '{"v": 2}')
+    assert store.get_extraction(listing.id, "model-a", "hash-a", 0) == '{"v": 2}'
+
+
+def test_extraction_cascade_deletes_with_listing(store):
+    listing, _ = store.upsert_listing(make_listing())
+    store.save_extraction(listing.id, "model-a", "hash-a", 0, '{"v": 1}')
+
+    store.conn.execute("DELETE FROM listings WHERE id = ?", (listing.id,))
+    store.conn.commit()
+
+    row = store.conn.execute(
+        "SELECT COUNT(*) c FROM extractions WHERE listing_id = ?", (listing.id,)
+    ).fetchone()
+    assert row["c"] == 0

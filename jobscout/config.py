@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import tomllib
 from pathlib import Path
@@ -134,6 +136,23 @@ class Config(BaseModel):
     gates: list[GateConfig] = Field(default_factory=list)
     priority: PriorityConfig = Field(default_factory=PriorityConfig)
     sources: list[SourceConfig] = Field(default_factory=list)
+
+
+def assessment_config_hash(cfg: Config) -> str:
+    """Fingerprint of everything that determines a score's output.
+
+    Changing any of these makes prior scores stale: rescore --all uses this to skip
+    listings already scored under the current config instead of re-paying for them.
+    """
+    payload = {
+        "scorer": cfg.ai.scorer,
+        "bulk_model": cfg.ai.bulk_model,
+        "bulk_reasoning": cfg.ai.bulk_reasoning,
+        "scorer_repeats": cfg.ai.scorer_repeats,
+        "gates": [g.model_dump() for g in cfg.gates],
+        "priority": cfg.priority.model_dump(),
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()[:16]
 
 
 _CONFIG_PATHS = ["config.toml", "~/.config/jobscout/config.toml"]

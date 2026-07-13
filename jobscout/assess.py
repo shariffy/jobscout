@@ -18,17 +18,20 @@ fit >= 70 shortlist plumbing keeps working until it is dropped.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import BaseModel, Field
 
-from .config import Config
+from .config import Config, assessment_config_hash
 from .features import FEATURES
 from .gates import GateConfig, PriorityConfig
 from .llm import openrouter_client, with_retries
 from .models import CandidateProfile, Listing, Score
 from .scoring import _listing_text, _parse_score
+from .store import Store
 
 # role_substance below this confidence cannot move a listing between tiers.
 SUBSTANCE_MIN_CONFIDENCE = 0.7
@@ -118,6 +121,17 @@ def build_extract_system(gates: list[GateConfig]) -> str:
     else:
         lines.append('\nNo rules to evaluate — return "rules": {}.')
     return "\n".join(lines)
+
+
+def extract_prompt_hash(system: str, reasoning: dict[str, Any] | None) -> str:
+    """Cache key for a Stage-1 extraction call, independent of listing/repeat.
+
+    Folds reasoning in alongside the prompt text so flipping ai.bulk_reasoning
+    (e.g. off -> low effort) invalidates cached extractions instead of serving a
+    value produced under a different thinking budget.
+    """
+    payload = json.dumps({"system": system, "reasoning": reasoning}, sort_keys=True)
+    return hashlib.sha256(payload.encode()).hexdigest()[:16]
 
 
 def parse_extraction(data: dict) -> Extraction:
@@ -362,14 +376,29 @@ class GatedScorer:
     config ([[gates]] / [priority]); it is accepted only for BulkScorer signature
     parity."""
 
-    def __init__(self, cfg: Config, profile: CandidateProfile | None = None) -> None:
+    def __init__(
+        self, cfg: Config, profile: CandidateProfile | None = None, store: Store | None = None
+    ) -> None:
         self._cfg = cfg
         self._client = openrouter_client(cfg)
         self._system = build_extract_system(cfg.gates)
         self._reasoning = cfg.ai.bulk_reasoning
         self._repeats = max(1, cfg.ai.scorer_repeats)
+        self._version = assessment_config_hash(cfg)
+        # Stage-1 cache: a listing/model/prompt/repeat already extracted skips the
+        # LLM call entirely, so gate/priority-only config edits (which don't change
+        # extract_prompt_hash) never re-pay for extraction on rescore.
+        self._store = store
+        self._prompt_hash = extract_prompt_hash(self._system, self._reasoning)
 
-    def extract(self, listing: Listing) -> Extraction:
+    def extract(self, listing: Listing, repeat_idx: int = 0) -> Extraction:
+        if self._store is not None and listing.id is not None:
+            cached = self._store.get_extraction(
+                listing.id, self._cfg.ai.bulk_model, self._prompt_hash, repeat_idx
+            )
+            if cached is not None:
+                return Extraction.model_validate_json(cached)
+
         messages = [
             {"role": "system", "content": self._system},
             {"role": "user", "content": f"Extract from this listing:\n\n{_listing_text(listing)}"},
@@ -392,7 +421,13 @@ class GatedScorer:
             )
             raw = (response.choices[0].message.content or "") if response.choices else ""
             try:
-                return parse_extraction(_parse_score(raw))
+                extraction = parse_extraction(_parse_score(raw))
+                if self._store is not None and listing.id is not None:
+                    self._store.save_extraction(
+                        listing.id, self._cfg.ai.bulk_model, self._prompt_hash, repeat_idx,
+                        extraction.model_dump_json(),
+                    )
+                return extraction
             except Exception as exc:
                 last_exc = exc
                 if attempt == 0:
@@ -411,9 +446,9 @@ class GatedScorer:
         # K extractions errors out; only give up if every attempt fails.
         assessments = []
         last_exc: Exception | None = None
-        for _ in range(self._repeats):
+        for rep in range(self._repeats):
             try:
-                assessments.append(assess(self._cfg, listing, self.extract(listing)))
+                assessments.append(assess(self._cfg, listing, self.extract(listing, rep)))
             except Exception as exc:
                 last_exc = exc
         if not assessments:
@@ -431,6 +466,7 @@ class GatedScorer:
             priority=a.priority,
             tier_label=a.tier_label,
             gate_results=[g.model_dump() for g in a.gate_results],
+            assessment_version=self._version,
             scored_at=datetime.now(UTC),
         )
 
@@ -444,10 +480,15 @@ class GatedScorer:
         return scores
 
 
-def build_scorer(cfg: Config, profile: CandidateProfile):
-    """Select the Score producer from ai.scorer ("additive" | "gated")."""
+def build_scorer(cfg: Config, profile: CandidateProfile, store: Store | None = None):
+    """Select the Score producer from ai.scorer ("additive" | "gated").
+
+    store is optional and only consulted by GatedScorer, to cache Stage-1
+    extractions (see GatedScorer.extract); pass the open Store so a rescore reuses
+    already-paid-for extractions.
+    """
     if cfg.ai.scorer == "gated":
-        return GatedScorer(cfg, profile)
+        return GatedScorer(cfg, profile, store=store)
     from .scoring import BulkScorer
 
     return BulkScorer(cfg, profile)

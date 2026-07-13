@@ -63,6 +63,10 @@ class Score(BaseModel):
     priority: int | None = None  # sort key within the apply set; lower = do first
     tier_label: str = ""  # "T1".."T4" | "none" | "" (distinct from bulk/deep tier)
     gate_results: list[dict[str, Any]] = Field(default_factory=list)
+    # Fingerprint of the config that produced this score (see config.assessment_config_hash).
+    # "" for legacy rows scored before this field existed. Lets rescore skip listings
+    # already current instead of re-paying for an unchanged config.
+    assessment_version: str = ""
     scored_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
