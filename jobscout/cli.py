@@ -582,6 +582,9 @@ def dismiss(
 
             if ns and app_row.notion_page_id:
                 try:
+                    # Set Status before archiving so an unarchive later shows the
+                    # right state instead of whatever it was before dismissal.
+                    ns.update_status(app_row.notion_page_id, status="not_interested")
                     ns.archive_page(app_row.notion_page_id)
                     console.print(f"  [dim]✓ archived in Notion[/]")
                 except Exception as exc:
@@ -590,12 +593,69 @@ def dismiss(
             console.print(f"  [dim]✗[/] {listing.title} @ {listing.company} — dismissed")
 
 
+# Statuses that also archive the Notion page once synced — not_interested is
+# pre-application noise; rejected/withdrawn are terminal outcomes you've asked
+# to have off the active board too. Anything else (applied, interviewing,
+# offer, prepping, shortlisted) stays visible.
+_ARCHIVE_ON_STATUS = {"not_interested", "rejected", "withdrawn"}
+
+
+def _sync_status_drift(store, ns, console, board_statuses: list[dict]) -> None:
+    """Pull manual Status edits made directly on the Notion board into SQLite.
+
+    Action is reserved for operations with no status equivalent (Rescore,
+    Prep) — everything else, including future statuses, is just "change the
+    dropdown" and gets picked up here instead of needing a matching Action.
+    """
+    from .models import Application
+
+    for item in board_statuses:
+        lid = item["listing_id"]
+        notion_status = item["status"]
+        app_row = store.get_application(lid)
+        local_status = app_row.status if app_row else None
+        if notion_status == local_status:
+            continue
+
+        listing = store.get_listing(lid)
+        if not listing:
+            continue
+
+        console.print(f"  [status → {notion_status}] {listing.title} @ {listing.company}")
+        update: dict = {"status": notion_status}
+        if item.get("notes"):
+            update["notes"] = item["notes"]
+
+        chase_at = None
+        if notion_status == "applied":
+            now = datetime.now(UTC)
+            chase_at = now + timedelta(days=7)
+            update["applied_at"] = now
+            update["chase_at"] = chase_at
+
+        new_app = (app_row or Application(listing_id=lid)).model_copy(update=update)
+        store.upsert_application(new_app)
+
+        try:
+            if notion_status == "applied":
+                ns.update_status(item["page_id"], status="applied",
+                                  applied_at=new_app.applied_at, chase_at=chase_at)
+                console.print(f"    [dim]synced — chase {chase_at.date()}[/]")
+            elif notion_status in _ARCHIVE_ON_STATUS:
+                ns.archive_page(item["page_id"])
+                console.print(f"    [dim]synced + archived[/]")
+            else:
+                console.print(f"    [dim]synced[/]")
+        except Exception as exc:
+            console.print(f"    [yellow]Notion follow-up failed: {exc}[/]")
+
+
 @app.command()
 def watch(
     interval: int = typer.Option(60, "--interval", "-i", help="Poll interval in seconds"),
     config: Optional[str] = _CONFIG_OPT,
 ) -> None:
-    """Poll the Notion board for pending actions and execute them."""
+    """Poll the Notion board for Status changes and pending Actions, and sync them."""
     import time
     import httpx as _httpx
     from bs4 import BeautifulSoup as _BS
@@ -611,7 +671,7 @@ def watch(
 
     console.print(f"[bold]Watching Notion board[/] (every {interval}s) — Ctrl+C to stop\n")
 
-    # Patch schema to ensure "Not Interested" option exists
+    # Patch schema to pick up any property/option changes since the board was created.
     try:
         ns.update_schema()
     except Exception:
@@ -621,16 +681,23 @@ def watch(
 
     while True:
         try:
+            board_statuses = ns.list_active_statuses()
+        except Exception as exc:
+            console.print(f"[yellow]Status poll error:[/] {exc}")
+            board_statuses = []
+
+        try:
             pending = ns.get_pending_actions()
         except Exception as exc:
-            console.print(f"[yellow]Poll error:[/] {exc}")
-            time.sleep(interval)
-            continue
-
-        if pending:
-            console.print(f"[bold]{len(pending)} pending action(s)[/]")
+            console.print(f"[yellow]Action poll error:[/] {exc}")
+            pending = []
 
         with Store(cfg.store.db_path) as store:
+            _sync_status_drift(store, ns, console, board_statuses)
+
+            if pending:
+                console.print(f"[bold]{len(pending)} pending action(s)[/]")
+
             for item in pending:
                 page_id = item["page_id"]
                 lid = item["listing_id"]
@@ -643,18 +710,7 @@ def watch(
                 console.print(f"  [{action}] {listing.title} @ {listing.company}")
 
                 try:
-                    if action == "Not Interested":
-                        existing = store.get_application(lid)
-                        update = {"status": "not_interested"}
-                        if item.get("notes"):
-                            update["notes"] = item["notes"]
-                        app_row = (existing or Application(listing_id=lid)).model_copy(update=update)
-                        store.upsert_application(app_row)
-                        ns.reset_action(page_id)
-                        ns.archive_page(page_id)
-                        console.print(f"    [dim]dismissed + archived[/]")
-
-                    elif action == "Rescore":
+                    if action == "Rescore":
                         profile_obj = build_profile(cfg)
                         scorer = build_scorer(cfg, profile_obj, store)
                         try:
@@ -690,17 +746,6 @@ def watch(
                         ns._patch(f"/pages/{page_id}", {"properties": {"Status": {"select": {"name": "prepping"}}}})
                         ns.reset_action(page_id)
                         console.print(f"    [dim]prep brief appended → status: prepping[/]")
-
-                    elif action == "Mark as Applied":
-                        _, saved, chase_at = _apply_to_store(store, lid)
-                        ns.update_status(
-                            page_id,
-                            status="applied",
-                            applied_at=saved.applied_at,
-                            chase_at=chase_at,
-                        )
-                        ns.reset_action(page_id)
-                        console.print(f"    [dim]marked applied → chase {chase_at.date()}[/]")
 
                     else:
                         # Unknown action — clear it
@@ -787,6 +832,9 @@ def prune(
                 console.print(f"[dim]{label}[/]")
             else:
                 try:
+                    # Set Status before archiving so an unarchive later shows the
+                    # right state instead of whatever it was before pruning.
+                    ns.update_status(page_id, status="not_interested")
                     ns.archive_page(page_id)
                     # Mirror the archive locally so it doesn't come back as a stale
                     # "shortlisted" row on the next rescore/shortlist pass — a page

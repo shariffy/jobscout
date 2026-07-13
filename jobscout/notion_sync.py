@@ -60,13 +60,15 @@ _DB_PROPERTIES = {
     "Flags": {"rich_text": {}},
     "Notes": {"rich_text": {}},
     "Contacts": {"rich_text": {}},
+    # Reserved for operations with no Status equivalent — an LLM call or content
+    # generation, not a state transition. Status changes (including applied,
+    # rejected, withdrawn, not_interested) are picked up directly by watch()
+    # polling the Status field; see NotionSync.list_active_statuses.
     "Action": {
         "select": {
             "options": [
                 {"name": "Rescore", "color": "blue"},
                 {"name": "Prep", "color": "purple"},
-                {"name": "Mark as Applied", "color": "green"},
-                {"name": "Not Interested", "color": "red"},
             ]
         }
     },
@@ -246,6 +248,39 @@ class NotionSync:
                     "notes": notes,
                 })
         return pending
+
+    def list_active_statuses(self) -> list[dict]:
+        """(page_id, listing_id, status, notes) for every non-archived page.
+
+        Archived pages are excluded by the query API automatically, so this
+        naturally stops reporting a page once it's been archived (e.g. by the
+        sync below). Used to detect a Status edit made by hand on the board —
+        Action is reserved for operations that have no status equivalent.
+        """
+        results = []
+        cursor = None
+        while True:
+            body: dict = {"page_size": 100}
+            if cursor:
+                body["start_cursor"] = cursor
+            data = self._post(f"/databases/{self.database_id}/query", body)
+            for page in data.get("results", []):
+                props = page["properties"]
+                db_id = props.get("DB ID", {}).get("number")
+                status_sel = props.get("Status", {}).get("select")
+                if db_id is None or not status_sel:
+                    continue
+                notes_rt = props.get("Notes", {}).get("rich_text", [])
+                results.append({
+                    "page_id": page["id"],
+                    "listing_id": int(db_id),
+                    "status": status_sel["name"],
+                    "notes": notes_rt[0]["text"]["content"] if notes_rt else "",
+                })
+            if not data.get("has_more"):
+                break
+            cursor = data.get("next_cursor")
+        return results
 
     def update_score_callout(self, page_id: str, score: "Score") -> None:
         """Update the 🤖 callout block on an existing page with the latest score."""
