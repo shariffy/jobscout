@@ -31,7 +31,7 @@ from .features import FEATURES
 from .gates import GateConfig, PriorityConfig
 from .llm import openrouter_client, with_retries
 from .models import CandidateProfile, Listing, Score
-from .scoring import _listing_text, _parse_score
+from .scoring import _listing_text, _parse_score, content_hash
 from .store import Store
 
 # role_substance below this confidence cannot move a listing between tiers.
@@ -401,6 +401,25 @@ def consensus_locked(assessments: list[Assessment], remaining: int) -> bool:
 # Producer
 # ---------------------------------------------------------------------------
 
+def _usage_dict(response) -> dict:
+    """Pull real OpenRouter usage off a completion response (requested via
+    usage.include). cost is OpenRouter's own charged credit total, exposed as an
+    extra field on the usage object. Everything is best-effort — a provider that
+    omits usage just yields nulls, never an error."""
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return {}
+    extra = getattr(usage, "model_extra", None) or {}
+    cost = getattr(usage, "cost", None)
+    if cost is None:
+        cost = extra.get("cost")
+    return {
+        "cost": cost,
+        "prompt_tokens": getattr(usage, "prompt_tokens", None),
+        "completion_tokens": getattr(usage, "completion_tokens", None),
+    }
+
+
 class GatedScorer:
     """Drop-in Score producer: one extraction call, then pure-Python policy.
 
@@ -424,9 +443,10 @@ class GatedScorer:
         self._prompt_hash = extract_prompt_hash(self._system, self._reasoning)
 
     def extract(self, listing: Listing, repeat_idx: int = 0) -> Extraction:
+        text_hash = content_hash(listing)
         if self._store is not None and listing.id is not None:
             cached = self._store.get_extraction(
-                listing.id, self._cfg.ai.bulk_model, self._prompt_hash, repeat_idx
+                listing.id, self._cfg.ai.bulk_model, self._prompt_hash, repeat_idx, text_hash
             )
             if cached is not None:
                 return Extraction.model_validate_json(cached)
@@ -457,7 +477,8 @@ class GatedScorer:
                 if self._store is not None and listing.id is not None:
                     self._store.save_extraction(
                         listing.id, self._cfg.ai.bulk_model, self._prompt_hash, repeat_idx,
-                        extraction.model_dump_json(),
+                        extraction.model_dump_json(), text_hash=text_hash,
+                        usage=_usage_dict(response),
                     )
                 return extraction
             except Exception as exc:

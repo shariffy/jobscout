@@ -208,6 +208,18 @@ def _listing_text(listing: Listing) -> str:
     return "\n".join(parts)
 
 
+def content_hash(listing: Listing) -> str:
+    """Fingerprint of the exact text an extraction is computed from.
+
+    Keys the extraction cache on the listing's *content*, not just its id: when a
+    fuller JD is fetched and the description changes, this hash changes, so the stale
+    extraction misses and the listing is re-read instead of silently reused.
+    """
+    import hashlib
+
+    return hashlib.sha256(_listing_text(listing).encode()).hexdigest()[:16]
+
+
 def _parse_score(text: str) -> dict:
     raw = text.strip()
     # Strip a leading markdown code fence if the model wrapped its JSON in one.

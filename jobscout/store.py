@@ -42,13 +42,20 @@ CREATE TABLE IF NOT EXISTS scores (
 );
 
 CREATE TABLE IF NOT EXISTS extractions (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    listing_id   INTEGER NOT NULL REFERENCES listings(id) ON DELETE CASCADE,
-    model        TEXT    NOT NULL,
-    prompt_hash  TEXT    NOT NULL,
-    repeat_idx   INTEGER NOT NULL DEFAULT 0,
-    extraction   TEXT    NOT NULL,
-    extracted_at TEXT    NOT NULL,
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    listing_id        INTEGER NOT NULL REFERENCES listings(id) ON DELETE CASCADE,
+    model             TEXT    NOT NULL,
+    prompt_hash       TEXT    NOT NULL,
+    repeat_idx        INTEGER NOT NULL DEFAULT 0,
+    extraction        TEXT    NOT NULL,
+    extracted_at      TEXT    NOT NULL,
+    -- content fingerprint of the scored text; a cache hit also requires this to
+    -- match so an enriched JD is re-read instead of served stale.
+    text_hash         TEXT    NOT NULL DEFAULT '',
+    -- real OpenRouter usage for the call that produced this row (null on cache reuse).
+    cost              REAL,
+    prompt_tokens     INTEGER,
+    completion_tokens INTEGER,
     UNIQUE(listing_id, model, prompt_hash, repeat_idx)
 );
 
@@ -121,6 +128,19 @@ class Store:
         )
         if self._scores_needs_rebuild():
             self._rebuild_scores_table()
+
+        # Extraction cache: content fingerprint + real usage. Existing rows keep
+        # text_hash='' and are backfilled from current listing text by
+        # backfill_extraction_hashes.py so they aren't needlessly re-extracted.
+        ext_cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(extractions)")}
+        for column, ddl in [
+            ("text_hash", "text_hash TEXT NOT NULL DEFAULT ''"),
+            ("cost", "cost REAL"),
+            ("prompt_tokens", "prompt_tokens INTEGER"),
+            ("completion_tokens", "completion_tokens INTEGER"),
+        ]:
+            if column not in ext_cols:
+                self.conn.execute(f"ALTER TABLE extractions ADD COLUMN {ddl}")
 
     def _scores_needs_rebuild(self) -> bool:
         """True if scores.listing_id lacks ON DELETE CASCADE or a UNIQUE constraint.
@@ -375,36 +395,52 @@ class Store:
     # --- extractions (Stage-1 cache) ---
 
     def save_extraction(
-        self, listing_id: int, model: str, prompt_hash: str, repeat_idx: int, extraction_json: str
+        self, listing_id: int, model: str, prompt_hash: str, repeat_idx: int,
+        extraction_json: str, text_hash: str = "", usage: dict | None = None,
     ) -> None:
         """Cache one Stage-1 extraction, keyed so a model/prompt/reasoning change
         (a different prompt_hash) naturally misses instead of serving a stale value.
+        text_hash fingerprints the scored text so an enriched JD also misses. usage,
+        when given, records the real OpenRouter cost/tokens for this call.
 
         Locked because the vote's worker threads write concurrently (see connect)."""
-        row = (listing_id, model, prompt_hash, repeat_idx, extraction_json, _dt(datetime.now(UTC)))
+        u = usage or {}
+        row = (
+            listing_id, model, prompt_hash, repeat_idx, extraction_json,
+            _dt(datetime.now(UTC)), text_hash,
+            u.get("cost"), u.get("prompt_tokens"), u.get("completion_tokens"),
+        )
         with self._extraction_lock:
             self.conn.execute(
                 """
                 INSERT INTO extractions
-                    (listing_id, model, prompt_hash, repeat_idx, extraction, extracted_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                    (listing_id, model, prompt_hash, repeat_idx, extraction, extracted_at,
+                     text_hash, cost, prompt_tokens, completion_tokens)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(listing_id, model, prompt_hash, repeat_idx) DO UPDATE SET
-                    extraction=excluded.extraction, extracted_at=excluded.extracted_at
+                    extraction=excluded.extraction, extracted_at=excluded.extracted_at,
+                    text_hash=excluded.text_hash, cost=excluded.cost,
+                    prompt_tokens=excluded.prompt_tokens,
+                    completion_tokens=excluded.completion_tokens
                 """,
                 row,
             )
             self.conn.commit()
 
     def get_extraction(
-        self, listing_id: int, model: str, prompt_hash: str, repeat_idx: int
+        self, listing_id: int, model: str, prompt_hash: str, repeat_idx: int,
+        text_hash: str = "",
     ) -> str | None:
+        """Return the cached extraction only when the scored text still matches
+        (text_hash), so a listing whose JD was enriched is re-read, not served stale."""
         with self._extraction_lock:
             row = self.conn.execute(
                 """
                 SELECT extraction FROM extractions
                 WHERE listing_id = ? AND model = ? AND prompt_hash = ? AND repeat_idx = ?
+                  AND text_hash = ?
                 """,
-                (listing_id, model, prompt_hash, repeat_idx),
+                (listing_id, model, prompt_hash, repeat_idx, text_hash),
             ).fetchone()
         return row["extraction"] if row else None
 

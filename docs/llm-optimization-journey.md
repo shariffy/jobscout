@@ -281,6 +281,33 @@ the knob is kept modest (default 4) to stay under a shared OpenRouter key's rate
 `with_retries` still backs off on any 429. A 6-listing batch that took ~1.2 s serial
 (each listing's two votes already parallel) finishes in ~0.2 s at concurrency 6.
 
+### 5g′. Hardening the cache the savings ride on
+
+Two fixes once the cheaper pipeline leaned heavily on the extraction cache:
+
+- **Content-address the cache.** Extractions were keyed by `(listing_id, model,
+  prompt_hash, repeat_idx)` — text-independent, so a listing whose JD was later
+  enriched to a fuller version silently reused the *thin*-JD extraction on rescore,
+  defeating the enrichment entirely. The key now also includes a hash of the exact
+  scored text (`scoring.py::content_hash`), so a changed description misses and is
+  re-read. Existing rows were backfilled from current listing text
+  (`backfill_extraction_hashes.py`), preserving the cache with no re-pay.
+- **Audit real cost.** Every call already requested OpenRouter `usage` but discarded
+  it; the charged `cost` and token counts are now persisted per extraction row, so a
+  scan's spend is measurable from the DB instead of only projected from this
+  12-listing benchmark.
+
+### 5h. Negative regression labels
+
+The positive labels (roles applied to / prepping) only prove the shortlist stays
+*inclusive*. To also prove it stays *exclusive*, `validate_gate.py` gained a negative
+set seeded from roles marked `not_interested` in Notion — each a genuine hard
+dealbreaker (ML/data/FDE/Java/AI-title), pinned to the gate that should reject it. Soft
+"didn't grab me" passes are deliberately excluded: the gated design is meant to
+apply-and-rank-low those, not veto them. All currently pass, so the set is a regression
+guard — a future extraction-slim or model swap that started applying a known dealbreaker
+now fails loudly.
+
 ### 5f. The real acceptance test
 
 `validate_gate.py --scorer gated` re-scores every role actually applied to or prepping

@@ -24,7 +24,7 @@ from jobscout.assess import (
 from jobscout.config import AIConfig, Config
 from jobscout.gates import GateConfig
 from jobscout.models import Listing
-from jobscout.scoring import BulkScorer
+from jobscout.scoring import BulkScorer, content_hash
 
 # --- fixtures ---------------------------------------------------------------
 
@@ -344,13 +344,16 @@ def test_parse_extraction_tolerates_junk():
 
 # --- GatedScorer end-to-end (mocked client) -------------------------------------
 
-def mock_extract_response(payload: dict) -> MagicMock:
+def mock_extract_response(payload: dict, usage=None) -> MagicMock:
     message = MagicMock()
     message.content = json.dumps(payload)
     choice = MagicMock()
     choice.message = message
     resp = MagicMock()
     resp.choices = [choice]
+    # Explicit so getattr(response, "usage") isn't an auto-generated MagicMock that
+    # would be bound into sqlite; None => _usage_dict yields nulls.
+    resp.usage = usage
     return resp
 
 
@@ -566,9 +569,10 @@ def test_gated_scorer_parallel_batch_is_store_safe(mock_openai_cls, tmp_path):
         score = scorer.score(listing)
         assert score.decision == "apply"
         assert client.chat.completions.create.call_count == 2  # two agreed, third skipped
+        th = content_hash(listing)
         for rep in (0, 1):
             assert store.get_extraction(
-                listing.id, cfg.ai.bulk_model, scorer._prompt_hash, rep
+                listing.id, cfg.ai.bulk_model, scorer._prompt_hash, rep, th
             ) is not None
 
 
@@ -647,12 +651,78 @@ def test_gated_scorer_caches_extraction_to_store(mock_openai_cls, tmp_path):
         scorer.score(listing)
         assert client.chat.completions.create.call_count == 1
 
-        cached = store.get_extraction(listing.id, cfg.ai.bulk_model, scorer._prompt_hash, 0)
+        cached = store.get_extraction(
+            listing.id, cfg.ai.bulk_model, scorer._prompt_hash, 0, content_hash(listing)
+        )
         assert cached is not None
 
         # A second score() run must hit the cache instead of calling the LLM again.
         scorer.score(listing)
         assert client.chat.completions.create.call_count == 1
+
+
+@patch("jobscout.llm.openai.OpenAI")
+def test_enriched_description_invalidates_cached_extraction(mock_openai_cls, tmp_path):
+    # The bug this fixes: a fuller JD must NOT reuse the thin-JD extraction.
+    from jobscout.store import Store
+
+    client = MagicMock()
+    mock_openai_cls.return_value = client
+    client.chat.completions.create.return_value = mock_extract_response({
+        "features": {"role_substance": {"value": "leadership", "confidence": 0.9,
+                                        "evidence": "lead"}},
+        "rules": {"no_agency": {"verdict": "pass", "confidence": 0.9, "evidence": "product"}},
+        "summary": "Head of Eng.",
+    })
+    with Store(tmp_path / "cache.db") as store:
+        cfg = make_cfg()
+        cfg.ai.scorer_repeats = 1
+        scorer = GatedScorer(cfg, store=store)
+        listing, _ = store.upsert_listing(make_listing(description="thin JD"))
+
+        scorer.score(listing)
+        assert client.chat.completions.create.call_count == 1
+
+        # Same id, richer description -> different content hash -> must re-extract.
+        enriched = listing.model_copy(update={"description": "a much fuller job description"})
+        scorer.score(enriched)
+        assert client.chat.completions.create.call_count == 2
+
+        # Re-scoring the enriched text again now hits the cache (no third call).
+        scorer.score(enriched)
+        assert client.chat.completions.create.call_count == 2
+
+
+@patch("jobscout.llm.openai.OpenAI")
+def test_gated_scorer_persists_usage(mock_openai_cls, tmp_path):
+    from types import SimpleNamespace
+
+    from jobscout.store import Store
+
+    client = MagicMock()
+    mock_openai_cls.return_value = client
+    usage = SimpleNamespace(cost=0.00042, prompt_tokens=1500, completion_tokens=300)
+    client.chat.completions.create.return_value = mock_extract_response(
+        {"features": {"role_substance": {"value": "leadership", "confidence": 0.9,
+                                         "evidence": "lead"}},
+         "rules": {"no_agency": {"verdict": "pass", "confidence": 0.9, "evidence": "product"}},
+         "summary": "Head of Eng."},
+        usage=usage,
+    )
+    with Store(tmp_path / "cache.db") as store:
+        cfg = make_cfg()
+        cfg.ai.scorer_repeats = 1
+        scorer = GatedScorer(cfg, store=store)
+        listing, _ = store.upsert_listing(make_listing())
+        scorer.score(listing)
+
+        row = store.conn.execute(
+            "SELECT cost, prompt_tokens, completion_tokens FROM extractions "
+            "WHERE listing_id = ?", (listing.id,)
+        ).fetchone()
+        assert row["cost"] == 0.00042
+        assert row["prompt_tokens"] == 1500
+        assert row["completion_tokens"] == 300
 
 
 @patch("jobscout.llm.openai.OpenAI")
