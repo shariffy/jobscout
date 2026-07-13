@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from typing import Any
 
@@ -471,24 +472,50 @@ class GatedScorer:
             f"Could not parse extraction after 2 attempts. Last raw: {raw!r}"
         ) from last_exc
 
+    def _extract_and_assess(self, listing: Listing, rep: int) -> Assessment:
+        return assess(self._cfg, listing, self.extract(listing, rep))
+
     def score(self, listing: Listing) -> Score:
-        # Self-consistency vote with early stop: extract up to K times, but stop as
-        # soon as the decision and tier are locked — i.e. the repeats still to come
-        # cannot change the majority (see consensus_locked). This is exactly
-        # equivalent to a fixed K-way majority on decision/tier while skipping calls
-        # that can't affect the result; for K=3 it drops the third call whenever the
-        # first two agree (~30% fewer calls corpus-wide). K=1 is the plain single call.
+        # Self-consistency vote with early stop and parallelism.
+        #
+        # A K-way majority can never be settled by fewer than floor(K/2)+1 agreeing
+        # runs, so that many repeats are ALWAYS needed — run them concurrently, since
+        # the extraction calls are independent (the vote's worker threads reach the
+        # extraction cache through Store's lock). The rest are conditional: run them
+        # serially, stopping the instant decision+tier lock (see consensus_locked), so
+        # the early-stop savings hold exactly — parallelism cuts latency, not calls.
+        # For K=3 that is two concurrent calls, then a third only when they disagree.
+        #
         # Tolerate partial failure — the vote still stands if a repeat errors out;
         # only give up if every attempt fails.
-        assessments = []
+        k = self._repeats
+        mandatory = k // 2 + 1
+        assessments: list[Assessment] = []
         last_exc: Exception | None = None
-        for rep in range(self._repeats):
+
+        if mandatory == 1:
             try:
-                assessments.append(assess(self._cfg, listing, self.extract(listing, rep)))
+                assessments.append(self._extract_and_assess(listing, 0))
             except Exception as exc:
                 last_exc = exc
-            if consensus_locked(assessments, self._repeats - rep - 1):
+        else:
+            with ThreadPoolExecutor(max_workers=mandatory) as pool:
+                futures = [pool.submit(self._extract_and_assess, listing, r)
+                           for r in range(mandatory)]
+                for fut in futures:  # collect in rep order for a deterministic vote
+                    try:
+                        assessments.append(fut.result())
+                    except Exception as exc:
+                        last_exc = exc
+
+        for rep in range(mandatory, k):
+            if consensus_locked(assessments, k - rep):
                 break
+            try:
+                assessments.append(self._extract_and_assess(listing, rep))
+            except Exception as exc:
+                last_exc = exc
+
         if not assessments:
             raise last_exc if last_exc else ValueError("extraction failed")
         a = consensus_assessment(assessments)

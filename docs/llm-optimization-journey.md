@@ -259,6 +259,19 @@ representative. A *conservative* variant that also waited for the full policy si
 those secondary fields — so it paid a premium to stabilise the fields that matter least.
 Rejected in favour of the decision+tier lock.
 
+**Parallelising the mandatory calls.** A K-way majority can't be settled by fewer than
+floor(K/2)+1 agreeing runs, so those first votes are *always* made — `GatedScorer.score`
+now issues them concurrently (a `ThreadPoolExecutor`), then runs the conditional
+remainder serially with the same lock. For K=3 that is two calls at once, then a third
+only on disagreement: latency for the ~85% two-call case drops from ~2×call to ~1×call
+(a mocked 0.3 s/call run finishes in 0.30 s, not 0.60 s) with **no** change to call count
+or decision — parallelism buys latency, the lock buys the calls. The vote's worker
+threads reach the sqlite extraction cache through a lock on `Store` (the only table
+touched concurrently); everything else stays single-threaded. Fanning out *across
+listings* — `score_batch` is still a serial loop — is the larger remaining win and reuses
+the same thread-safe cache, but it interacts with source rate limits (LinkedIn 429s) and
+was left as a separate step.
+
 ### 5f. The real acceptance test
 
 `validate_gate.py --scorer gated` re-scores every role actually applied to or prepping

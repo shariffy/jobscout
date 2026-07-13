@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -78,9 +79,16 @@ class Store:
     def __init__(self, db_path: str | Path = "jobscout.db") -> None:
         self._path = str(db_path)
         self._conn: sqlite3.Connection | None = None
+        # Guards the extraction cache, the one table touched concurrently: the
+        # self-consistency vote extracts its mandatory repeats on worker threads
+        # (see GatedScorer.score). Everything else runs single-threaded.
+        self._extraction_lock = threading.Lock()
 
     def connect(self) -> None:
-        self._conn = sqlite3.connect(self._path)
+        # check_same_thread=False lets the vote's worker threads reach the cache;
+        # concurrent access is confined to the two extraction methods and
+        # serialised by _extraction_lock.
+        self._conn = sqlite3.connect(self._path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
@@ -370,28 +378,34 @@ class Store:
         self, listing_id: int, model: str, prompt_hash: str, repeat_idx: int, extraction_json: str
     ) -> None:
         """Cache one Stage-1 extraction, keyed so a model/prompt/reasoning change
-        (a different prompt_hash) naturally misses instead of serving a stale value."""
-        self.conn.execute(
-            """
-            INSERT INTO extractions (listing_id, model, prompt_hash, repeat_idx, extraction, extracted_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(listing_id, model, prompt_hash, repeat_idx) DO UPDATE SET
-                extraction=excluded.extraction, extracted_at=excluded.extracted_at
-            """,
-            (listing_id, model, prompt_hash, repeat_idx, extraction_json, _dt(datetime.now(UTC))),
-        )
-        self.conn.commit()
+        (a different prompt_hash) naturally misses instead of serving a stale value.
+
+        Locked because the vote's worker threads write concurrently (see connect)."""
+        row = (listing_id, model, prompt_hash, repeat_idx, extraction_json, _dt(datetime.now(UTC)))
+        with self._extraction_lock:
+            self.conn.execute(
+                """
+                INSERT INTO extractions
+                    (listing_id, model, prompt_hash, repeat_idx, extraction, extracted_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(listing_id, model, prompt_hash, repeat_idx) DO UPDATE SET
+                    extraction=excluded.extraction, extracted_at=excluded.extracted_at
+                """,
+                row,
+            )
+            self.conn.commit()
 
     def get_extraction(
         self, listing_id: int, model: str, prompt_hash: str, repeat_idx: int
     ) -> str | None:
-        row = self.conn.execute(
-            """
-            SELECT extraction FROM extractions
-            WHERE listing_id = ? AND model = ? AND prompt_hash = ? AND repeat_idx = ?
-            """,
-            (listing_id, model, prompt_hash, repeat_idx),
-        ).fetchone()
+        with self._extraction_lock:
+            row = self.conn.execute(
+                """
+                SELECT extraction FROM extractions
+                WHERE listing_id = ? AND model = ? AND prompt_hash = ? AND repeat_idx = ?
+                """,
+                (listing_id, model, prompt_hash, repeat_idx),
+            ).fetchone()
         return row["extraction"] if row else None
 
     # --- applications ---

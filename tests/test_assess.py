@@ -517,6 +517,62 @@ def test_gated_scorer_early_stops_when_first_two_agree(mock_openai_cls):
 
 
 @patch("jobscout.assess.GatedScorer.extract")
+def test_gated_scorer_runs_mandatory_calls_in_parallel(mock_extract):
+    # A barrier of 2 only clears if both mandatory extractions are in flight at once,
+    # so this deadlocks (and times out) under a serial implementation — proof the two
+    # calls actually overlap.
+    import threading
+
+    barrier = threading.Barrier(2, timeout=5)
+    good = Extraction(
+        features={"role_substance": FeatureValue(value="leadership", confidence=0.9,
+                                                 evidence="lead")},
+        rules={}, summary="Head of Eng.",
+    )
+
+    def extract(listing, rep):
+        barrier.wait()
+        return good
+
+    mock_extract.side_effect = extract
+    cfg = make_cfg()
+    cfg.ai.scorer_repeats = 3
+    with patch("jobscout.llm.openai.OpenAI"):
+        score = GatedScorer(cfg).score(make_listing())
+    assert score.decision == "apply"
+    assert mock_extract.call_count == 2  # both agreed, so the third call is skipped
+
+
+@patch("jobscout.llm.openai.OpenAI")
+def test_gated_scorer_parallel_batch_is_store_safe(mock_openai_cls, tmp_path):
+    # Real Store + real worker threads: the mandatory repeats read/write the sqlite
+    # extraction cache concurrently. A thread-unsafe connection would raise here.
+    from jobscout.store import Store
+
+    client = MagicMock()
+    mock_openai_cls.return_value = client
+    client.chat.completions.create.return_value = mock_extract_response({
+        "features": {"role_substance": {"value": "leadership", "confidence": 0.9,
+                                        "evidence": "lead"}},
+        "rules": {"no_agency": {"verdict": "pass", "confidence": 0.9, "evidence": "product"}},
+        "summary": "Head of Eng.",
+    })
+    with Store(tmp_path / "cache.db") as store:
+        cfg = make_cfg()
+        cfg.ai.scorer_repeats = 3
+        scorer = GatedScorer(cfg, store=store)
+        listing, _ = store.upsert_listing(make_listing())
+
+        score = scorer.score(listing)
+        assert score.decision == "apply"
+        assert client.chat.completions.create.call_count == 2  # two agreed, third skipped
+        for rep in (0, 1):
+            assert store.get_extraction(
+                listing.id, cfg.ai.bulk_model, scorer._prompt_hash, rep
+            ) is not None
+
+
+@patch("jobscout.assess.GatedScorer.extract")
 def test_gated_scorer_runs_third_call_when_first_two_disagree(mock_extract):
     # rep0/rep1 disagree on decision, so nothing is locked and the tiebreak call runs.
     yes = Extraction(
@@ -577,7 +633,8 @@ def test_gated_scorer_caches_extraction_to_store(mock_openai_cls, tmp_path):
     client = MagicMock()
     mock_openai_cls.return_value = client
     client.chat.completions.create.return_value = mock_extract_response({
-        "features": {"role_substance": {"value": "leadership", "confidence": 0.9, "evidence": "lead"}},
+        "features": {"role_substance": {"value": "leadership", "confidence": 0.9,
+                                        "evidence": "lead"}},
         "rules": {"no_agency": {"verdict": "pass", "confidence": 0.9, "evidence": "product"}},
         "summary": "Head of Eng.",
     })
