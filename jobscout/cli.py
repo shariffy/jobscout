@@ -275,68 +275,6 @@ def shortlist(
 
 
 # ---------------------------------------------------------------------------
-# apply
-# ---------------------------------------------------------------------------
-
-def _apply_to_store(store, listing_id: int, chase_days: int = 7):
-    """Mark a listing as applied in the local store and set a chase date.
-
-    Returns (listing, saved_application, chase_at), or (None, None, None) if the
-    listing does not exist. Notion syncing is left to the caller.
-    """
-    from .models import Application
-
-    listing = store.get_listing(listing_id)
-    if not listing:
-        return None, None, None
-
-    now = datetime.now(UTC)
-    chase_at = now + timedelta(days=chase_days)
-    existing = store.get_application(listing_id)
-    app_row = (existing or Application(listing_id=listing_id)).model_copy(update={
-        "status": "applied",
-        "applied_at": now,
-        "chase_at": chase_at,
-    })
-    saved = store.upsert_application(app_row)
-    return listing, saved, chase_at
-
-
-@app.command(name="mark-applied")
-def mark_applied(
-    listing_id: int = typer.Argument(..., help="Listing ID (from jobscout list)"),
-    chase_days: int = typer.Option(7, "--chase-days", help="Days until follow-up reminder"),
-    config: Optional[str] = _CONFIG_OPT,
-) -> None:
-    """Mark a role as applied and set a chase date."""
-    cfg = _load(config)
-
-    with Store(cfg.store.db_path) as store:
-        listing, saved, chase_at = _apply_to_store(store, listing_id, chase_days)
-        if not listing:
-            console.print(f"[red]No listing with ID {listing_id}.[/]")
-            raise typer.Exit(1)
-
-        if saved.notion_page_id:
-            try:
-                ns = _notion(cfg)
-                ns.update_status(
-                    saved.notion_page_id,
-                    status="applied",
-                    applied_at=saved.applied_at,
-                    chase_at=chase_at,
-                )
-                console.print("[dim]Notion updated.[/]")
-            except Exception as exc:
-                console.print(f"[yellow]Notion update failed:[/] {exc}")
-
-    console.print(
-        f"[green]Applied:[/] {listing.title} @ {listing.company}\n"
-        f"Chase reminder set for [bold]{chase_at.date()}[/]"
-    )
-
-
-# ---------------------------------------------------------------------------
 # prep
 # ---------------------------------------------------------------------------
 
@@ -553,13 +491,94 @@ def rescore(
                     console.print(f"       [yellow]Notion update failed: {exc}[/]")
 
 
-@app.command()
-def dismiss(
-    listing_ids: list[int] = typer.Argument(..., help="Listing IDs to dismiss (from jobscout list)"),
+_VALID_STATUSES = [
+    "shortlisted", "prepping", "applied", "interviewing",
+    "offer", "rejected", "withdrawn", "not_interested",
+]
+# Statuses that also archive the Notion page once synced — not_interested is
+# pre-application noise; rejected/withdrawn are terminal outcomes you've asked
+# to have off the active board too. Anything else (applied, interviewing,
+# offer, prepping, shortlisted) stays visible.
+_ARCHIVE_ON_STATUS = {"not_interested", "rejected", "withdrawn"}
+
+
+def _apply_status(
+    store, ns, lid: int, status: str, notes: str = "", chase_days: int = 7,
+    notion_page_id: str | None = None,
+):
+    """Set a listing's status locally, then best-effort mirror it to Notion —
+    computing chase_at on a transition into "applied" and archiving on a
+    terminal status (see _ARCHIVE_ON_STATUS). Shared by the `set-status`
+    command and watch's board-drift sync so a manual CLI change and a manual
+    Notion edit end up in exactly the same state.
+
+    notion_page_id lets a caller that already knows the page (board-drift
+    sync) link it even if no local Application row existed yet — otherwise
+    the Notion push is skipped for lack of anywhere to send it.
+
+    Returns (listing, saved_application, notion_error); listing is None if
+    the listing_id doesn't exist locally. notion_error is None on success or
+    when there's no linked Notion page to update.
+    """
+    from .models import Application
+
+    listing = store.get_listing(lid)
+    if not listing:
+        return None, None, None
+
+    existing = store.get_application(lid)
+    update: dict = {"status": status}
+    if notes:
+        update["notes"] = notes
+    if notion_page_id and not (existing and existing.notion_page_id):
+        update["notion_page_id"] = notion_page_id
+
+    chase_at = None
+    if status == "applied":
+        now = datetime.now(UTC)
+        chase_at = now + timedelta(days=chase_days)
+        update["applied_at"] = now
+        update["chase_at"] = chase_at
+
+    app_row = (existing or Application(listing_id=lid)).model_copy(update=update)
+    saved = store.upsert_application(app_row)
+
+    notion_error = None
+    if ns and saved.notion_page_id:
+        try:
+            ns.update_status(
+                saved.notion_page_id, status=status,
+                applied_at=saved.applied_at if status == "applied" else None,
+                chase_at=chase_at, notes=notes,
+            )
+            if status in _ARCHIVE_ON_STATUS:
+                ns.archive_page(saved.notion_page_id)
+        except Exception as exc:
+            notion_error = str(exc)
+
+    return listing, saved, notion_error
+
+
+@app.command(name="set-status")
+def set_status(
+    listing_ids: list[int] = typer.Argument(..., help="Listing IDs (from jobscout list)"),
+    to: str = typer.Option(..., "--to", "-t", help=f"New status: {', '.join(_VALID_STATUSES)}"),
+    notes: str = typer.Option("", "--notes", help="Optional note to attach"),
+    chase_days: int = typer.Option(
+        7, "--chase-days", help="Days until follow-up reminder (only used with --to applied)"
+    ),
     config: Optional[str] = _CONFIG_OPT,
 ) -> None:
-    """Mark listings as not interested — hides them from future shortlists."""
-    from .models import Application
+    """Set one or more listings' status locally and in Notion.
+
+    Archives the Notion page for a terminal status (not_interested, rejected,
+    withdrawn); computes a chase-date reminder for --to applied. Replaces the
+    old separate mark-applied / dismiss commands — both were just this with
+    the target status hardcoded.
+    """
+    if to not in _VALID_STATUSES:
+        console.print(f"[red]Unknown status {to!r}. Choose one of: {', '.join(_VALID_STATUSES)}[/]")
+        raise typer.Exit(1)
 
     cfg = _load(config)
     ns = None
@@ -569,35 +588,21 @@ def dismiss(
 
     with Store(cfg.store.db_path) as store:
         for lid in listing_ids:
-            listing = store.get_listing(lid)
+            listing, saved, notion_error = _apply_status(
+                store, ns, lid, to, notes=notes, chase_days=chase_days
+            )
             if not listing:
                 console.print(f"[red]No listing {lid}[/]")
                 continue
 
-            existing = store.get_application(lid)
-            app_row = (existing or Application(listing_id=lid)).model_copy(
-                update={"status": "not_interested"}
-            )
-            store.upsert_application(app_row)
-
-            if ns and app_row.notion_page_id:
-                try:
-                    # Set Status before archiving so an unarchive later shows the
-                    # right state instead of whatever it was before dismissal.
-                    ns.update_status(app_row.notion_page_id, status="not_interested")
-                    ns.archive_page(app_row.notion_page_id)
-                    console.print(f"  [dim]✓ archived in Notion[/]")
-                except Exception as exc:
-                    console.print(f"  [yellow]Notion archive failed:[/] {exc}")
-
-            console.print(f"  [dim]✗[/] {listing.title} @ {listing.company} — dismissed")
-
-
-# Statuses that also archive the Notion page once synced — not_interested is
-# pre-application noise; rejected/withdrawn are terminal outcomes you've asked
-# to have off the active board too. Anything else (applied, interviewing,
-# offer, prepping, shortlisted) stays visible.
-_ARCHIVE_ON_STATUS = {"not_interested", "rejected", "withdrawn"}
+            suffix = f" — chase {saved.chase_at.date()}" if to == "applied" else ""
+            console.print(f"  [dim]→ {to}[/]{suffix}  {listing.title} @ {listing.company}")
+            if ns and saved.notion_page_id:
+                if notion_error:
+                    console.print(f"    [yellow]Notion update failed:[/] {notion_error}")
+                else:
+                    archived = " + archived" if to in _ARCHIVE_ON_STATUS else ""
+                    console.print(f"    [dim]Notion updated{archived}.[/]")
 
 
 def _sync_status_drift(store, ns, console, board_statuses: list[dict]) -> None:
@@ -605,49 +610,32 @@ def _sync_status_drift(store, ns, console, board_statuses: list[dict]) -> None:
 
     Action is reserved for operations with no status equivalent (Rescore,
     Prep) — everything else, including future statuses, is just "change the
-    dropdown" and gets picked up here instead of needing a matching Action.
+    dropdown" and gets picked up here via the same _apply_status the
+    `set-status` command uses, instead of needing a matching Action.
     """
-    from .models import Application
-
     for item in board_statuses:
         lid = item["listing_id"]
         notion_status = item["status"]
         app_row = store.get_application(lid)
-        local_status = app_row.status if app_row else None
-        if notion_status == local_status:
+        if notion_status == (app_row.status if app_row else None):
             continue
 
-        listing = store.get_listing(lid)
+        listing, saved, notion_error = _apply_status(
+            store, ns, lid, notion_status, notes=item.get("notes", ""),
+            notion_page_id=item["page_id"],
+        )
         if not listing:
             continue
 
         console.print(f"  [status → {notion_status}] {listing.title} @ {listing.company}")
-        update: dict = {"status": notion_status}
-        if item.get("notes"):
-            update["notes"] = item["notes"]
-
-        chase_at = None
         if notion_status == "applied":
-            now = datetime.now(UTC)
-            chase_at = now + timedelta(days=7)
-            update["applied_at"] = now
-            update["chase_at"] = chase_at
-
-        new_app = (app_row or Application(listing_id=lid)).model_copy(update=update)
-        store.upsert_application(new_app)
-
-        try:
-            if notion_status == "applied":
-                ns.update_status(item["page_id"], status="applied",
-                                  applied_at=new_app.applied_at, chase_at=chase_at)
-                console.print(f"    [dim]synced — chase {chase_at.date()}[/]")
-            elif notion_status in _ARCHIVE_ON_STATUS:
-                ns.archive_page(item["page_id"])
-                console.print(f"    [dim]synced + archived[/]")
-            else:
-                console.print(f"    [dim]synced[/]")
-        except Exception as exc:
-            console.print(f"    [yellow]Notion follow-up failed: {exc}[/]")
+            console.print(f"    [dim]synced — chase {saved.chase_at.date()}[/]")
+        elif notion_status in _ARCHIVE_ON_STATUS:
+            console.print(f"    [dim]synced + archived[/]")
+        else:
+            console.print(f"    [dim]synced[/]")
+        if notion_error:
+            console.print(f"    [yellow]Notion follow-up failed: {notion_error}[/]")
 
 
 @app.command()
