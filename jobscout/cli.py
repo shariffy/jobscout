@@ -605,37 +605,53 @@ def set_status(
                     console.print(f"    [dim]Notion updated{archived}.[/]")
 
 
-def _sync_status_drift(store, ns, console, board_statuses: list[dict]) -> None:
+def _sync_status_drift(store, ns, console, board_statuses: list[dict]) -> int:
     """Pull manual Status edits made directly on the Notion board into SQLite.
 
     Action is reserved for operations with no status equivalent (Rescore,
     Prep) — everything else, including future statuses, is just "change the
     dropdown" and gets picked up here via the same _apply_status the
     `set-status` command uses, instead of needing a matching Action.
-    """
-    for item in board_statuses:
-        lid = item["listing_id"]
-        notion_status = item["status"]
-        app_row = store.get_application(lid)
-        if notion_status == (app_row.status if app_row else None):
-            continue
 
+    Prints exactly what changed for each listing (prior status -> new status,
+    plus chase date / archive / carried-over notes / any Notion push failure).
+    Returns the count synced.
+    """
+    drifted = []
+    for item in board_statuses:
+        app_row = store.get_application(item["listing_id"])
+        prior_status = app_row.status if app_row else None
+        if item["status"] != prior_status:
+            drifted.append((item, prior_status))
+
+    synced = 0
+    for item, prior_status in drifted:
+        notion_status = item["status"]
         listing, saved, notion_error = _apply_status(
-            store, ns, lid, notion_status, notes=item.get("notes", ""),
+            store, ns, item["listing_id"], notion_status, notes=item.get("notes", ""),
             notion_page_id=item["page_id"],
         )
         if not listing:
             continue
 
-        console.print(f"  [status → {notion_status}] {listing.title} @ {listing.company}")
-        if notion_status == "applied":
-            console.print(f"    [dim]synced — chase {saved.chase_at.date()}[/]")
-        elif notion_status in _ARCHIVE_ON_STATUS:
-            console.print(f"    [dim]synced + archived[/]")
-        else:
-            console.print(f"    [dim]synced[/]")
+        synced += 1
+        from_label = prior_status or "(unlinked)"
+        console.print(
+            f"  [status] {listing.title} @ {listing.company}: "
+            f"[dim]{from_label}[/] → [bold]{notion_status}[/]"
+        )
+        detail = []
+        if notion_status == "applied" and saved.chase_at:
+            detail.append(f"chase {saved.chase_at.date()}")
+        if notion_status in _ARCHIVE_ON_STATUS:
+            detail.append("archived in Notion")
+        if item.get("notes"):
+            detail.append(f'notes: "{item["notes"]}"')
+        if detail:
+            console.print(f"    [dim]{' · '.join(detail)}[/]")
         if notion_error:
             console.print(f"    [yellow]Notion follow-up failed: {notion_error}[/]")
+    return synced
 
 
 @app.command()
