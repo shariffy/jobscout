@@ -267,10 +267,19 @@ only on disagreement: latency for the ~85% two-call case drops from ~2×call to 
 (a mocked 0.3 s/call run finishes in 0.30 s, not 0.60 s) with **no** change to call count
 or decision — parallelism buys latency, the lock buys the calls. The vote's worker
 threads reach the sqlite extraction cache through a lock on `Store` (the only table
-touched concurrently); everything else stays single-threaded. Fanning out *across
-listings* — `score_batch` is still a serial loop — is the larger remaining win and reuses
-the same thread-safe cache, but it interacts with source rate limits (LinkedIn 429s) and
-was left as a separate step.
+touched concurrently); everything else stays single-threaded.
+
+**Parallelising across listings.** The larger win: batches (`scan` scoring,
+`rescore --all`) scored one listing at a time. `jobscout/parallel.py::map_bounded` now
+runs up to `ai.scorer_concurrency` listings at once, with the key discipline that the
+`work` callable (JD fetch + `score()`) runs on a worker thread while its `on_result`
+callback — every store write, console print, and Notion update — runs back on the
+calling thread as each finishes. That keeps the non-thread-safe surfaces (the Store's
+other tables, the console, the Notion client) single-threaded without a broad locking
+retrofit. Peak in-flight requests ≈ `scorer_concurrency × (scorer_repeats // 2 + 1)`, so
+the knob is kept modest (default 4) to stay under a shared OpenRouter key's rate limits;
+`with_retries` still backs off on any 429. A 6-listing batch that took ~1.2 s serial
+(each listing's two votes already parallel) finishes in ~0.2 s at concurrency 6.
 
 ### 5f. The real acceptance test
 

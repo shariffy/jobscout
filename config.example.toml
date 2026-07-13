@@ -26,6 +26,11 @@ prep_model = "anthropic/claude-sonnet-4-6"
 #                          your [[gates]] and ranks the apply set from [priority].
 #                          fit_score is still written (derived) so Notion/CLI keep working.
 # scorer = "gated"
+# scorer_repeats = 3         # gated only: extract N times per listing and take the
+#                            # majority decision (self-consistency). >1 buys stability.
+# scorer_concurrency = 4     # how many listings to score at once in a batch (scan /
+#                            # rescore). Peak in-flight requests ~= concurrency *
+#                            # (scorer_repeats // 2 + 1); keep modest vs rate limits. 1 = serial.
 fit_threshold = 70          # push to Notion when fit >= this
 # Optional OpenRouter reasoning config for the bulk model. Omit for the provider
 # default, or set effort / turn thinking off:

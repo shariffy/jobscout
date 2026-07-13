@@ -200,15 +200,23 @@ def scan(
 
         console.print(f"\n[bold]Scoring[/] {len(new_listings)} new listing(s) with {cfg.ai.bulk_model}…\n")
 
+        from .parallel import map_bounded
+
         scored = 0
-        for listing in new_listings:
-            try:
-                score = scorer.score(listing)
-                store.insert_score(score)
-                scored += 1
-                console.print(f"  {_verdict(score, cfg)}  {listing.title} @ {listing.company}")
-            except Exception as exc:
-                console.print(f"  [red]error scoring {listing.id}:[/] {exc}")
+
+        def _on_scored(done, total, listing, score, error):
+            nonlocal scored
+            if error is not None:
+                console.print(f"  [red]error scoring {listing.id}:[/] {error}")
+                return
+            # Runs on the calling thread (as each score completes), so the store
+            # write and console print are serialised and safe.
+            store.insert_score(score)
+            scored += 1
+            console.print(f"  {_verdict(score, cfg)}  {listing.title} @ {listing.company}")
+
+        map_bounded(new_listings, scorer.score, _on_scored,
+                    max_workers=cfg.ai.scorer_concurrency)
 
         console.print(
             f"\n[bold]Done.[/] {scored}/{len(new_listings)} scored. "
@@ -447,48 +455,59 @@ def rescore(
                 )
                 return
 
+        listings = []
         for lid in listing_ids:
             listing = store.get_listing(lid)
             if not listing:
                 console.print(f"[red]No listing {lid}[/]")
                 continue
+            listings.append(listing)
 
-            # Fetch full JD from individual page
+        def _rescore_work(listing):
+            # Worker thread: only the thread-safe network work (JD fetch + score).
+            # The fetch failure is returned, not printed, so the console stays on the
+            # main thread. Persisting the JD and the score happens in _on_rescored.
             enriched_desc = listing.description
+            fetch_err = None
             try:
-                resp = httpx.get(listing.url, headers={"User-Agent": ua}, follow_redirects=True, timeout=20)
-                soup = BeautifulSoup(resp.text, "html.parser")
-                jd = _extract_jd(soup)
+                resp = httpx.get(listing.url, headers={"User-Agent": ua},
+                                 follow_redirects=True, timeout=20)
+                jd = _extract_jd(BeautifulSoup(resp.text, "html.parser"))
                 if jd and len(jd) > len(enriched_desc or ""):
                     enriched_desc = jd
             except Exception as exc:
-                console.print(f"  [yellow]Could not fetch {listing.url}: {exc}[/]")
-
-            # Persist the enriched JD so a future rescore (gate tweak, model swap)
-            # skips this HTTP fetch and scores from the richer text already on file.
-            if enriched_desc != listing.description:
-                store.update_listing_description(lid, enriched_desc)
+                fetch_err = exc
             listing_with_jd = listing.model_copy(update={"description": enriched_desc})
+            score = scorer.score(listing_with_jd)
+            return {"enriched_desc": enriched_desc, "score": score, "fetch_err": fetch_err}
 
-            # Score first, then replace — so a crash mid-flight leaves the old score intact
-            try:
-                score = scorer.score(listing_with_jd)
-                store.insert_score(score)
-                console.print(f"  {_verdict(score, cfg)}  {listing.title} @ {listing.company}")
-                if score.rationale:
-                    console.print(f"       [dim]{score.rationale}[/]")
-            except Exception as exc:
-                console.print(f"  [red]error scoring {lid}:[/] {exc}")
-                continue
-
-            # Update Notion page if linked and not dismissed
-            app_row = store.get_application(lid)
+        def _on_rescored(done, total, listing, result, error):
+            # Calling thread: store writes, console, and Notion are all safe here.
+            if error is not None:
+                console.print(f"  [red]error scoring {listing.id}:[/] {error}")
+                return
+            if result["fetch_err"] is not None:
+                console.print(f"  [yellow]Could not fetch {listing.url}: {result['fetch_err']}[/]")
+            # Persist the enriched JD so a future rescore skips the HTTP fetch.
+            if result["enriched_desc"] != listing.description:
+                store.update_listing_description(listing.id, result["enriched_desc"])
+            score = result["score"]
+            store.insert_score(score)
+            console.print(f"  {_verdict(score, cfg)}  {listing.title} @ {listing.company}")
+            if score.rationale:
+                console.print(f"       [dim]{score.rationale}[/]")
+            app_row = store.get_application(listing.id)
             if app_row and app_row.notion_page_id and ns and app_row.status != "not_interested":
                 try:
                     ns.update_score(app_row.notion_page_id, score)
                     console.print(f"       [dim]Notion updated.[/]")
                 except Exception as exc:
                     console.print(f"       [yellow]Notion update failed: {exc}[/]")
+
+        from .parallel import map_bounded
+
+        map_bounded(listings, _rescore_work, _on_rescored,
+                    max_workers=cfg.ai.scorer_concurrency)
 
 
 _VALID_STATUSES = [

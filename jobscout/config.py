@@ -40,6 +40,11 @@ class AIConfig(BaseModel):
     # take the majority decision. >1 trades cost/latency for decision stability — the
     # lever that lets a cheaper, less-deterministic bulk_model match a stronger one.
     scorer_repeats: int = 1
+    # How many listings to score concurrently in a batch (scan / rescore). Each
+    # listing's vote already fans its mandatory repeats out in parallel, so the peak
+    # in-flight request count is roughly scorer_concurrency * (scorer_repeats // 2 + 1)
+    # — keep it modest so a shared OpenRouter key isn't rate-limited. 1 = serial.
+    scorer_concurrency: int = 4
     fit_threshold: int = 70
 
     @model_validator(mode="after")

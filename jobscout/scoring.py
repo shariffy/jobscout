@@ -313,10 +313,10 @@ class BulkScorer:
         listings: list[Listing],
         progress_cb=None,
     ) -> list[Score]:
-        scores = []
-        for i, listing in enumerate(listings):
-            score = self.score(listing)
-            scores.append(score)
-            if progress_cb:
-                progress_cb(i + 1, len(listings), listing, score)
-        return scores
+        from .parallel import score_batch_parallel
+
+        return score_batch_parallel(
+            self, listings,
+            max_workers=max(1, self._cfg.ai.scorer_concurrency),
+            progress_cb=progress_cb,
+        )
