@@ -11,13 +11,12 @@ from __future__ import annotations
 # role_substance values the extractor must choose from (or null when unclear).
 ROLE_SUBSTANCES = ["leadership", "founding", "ic", "management"]
 
+# Only the features some [[gate]] or the tiering actually consumes are extracted —
+# role_substance (tiering) plus the four structured-gate inputs below. Five formerly
+# extracted-but-unused fields (title, function, remote_policy, company_eng_headcount,
+# company_stage) were dropped: they cost ~25% of the response for no policy effect.
+# Add a feature back here the moment a gate or tier needs it.
 FEATURES: dict[str, str] = {
-    "title": "The job title as the listing states it (string).",
-    "function": (
-        "The core job function, e.g. software-engineering, engineering-leadership, "
-        "data-engineering, ml-platform, sre-infrastructure, product-management, sales, "
-        "marketing, design, customer-engineering, other (string)."
-    ),
     "role_substance": (
         "What the role ACTUALLY is, regardless of its title label: 'leadership' = leads an "
         "engineering function/org (Head/Director/VP substance); 'management' = manages one team "
@@ -37,7 +36,6 @@ FEATURES: dict[str, str] = {
         "none is stated, return null. Only use confidence >= 0.7 when an explicit day count or "
         "policy sentence is present in the description; otherwise null."
     ),
-    "remote_policy": "One of: remote, hybrid, office; null when unstated (string).",
     "salary_gbp": (
         "Stated annual salary in GBP as a number — use the TOP of a stated range. null when "
         "unstated, non-annual, or in a currency you cannot confidently convert."
@@ -49,14 +47,6 @@ FEATURES: dict[str, str] = {
     "industry": (
         "The company's industry, lowercase (e.g. fintech, music, crypto, gambling, healthcare, "
         "devtools); null when unclear."
-    ),
-    "company_eng_headcount": (
-        "Engineering headcount as a number when stated or clearly inferable (e.g. '60+ "
-        "engineers'); null otherwise. Do not guess from total company size."
-    ),
-    "company_stage": (
-        "Funding/maturity stage, lowercase (e.g. pre-seed, seed, series-a, series-b, series-c, "
-        "scale-up, public, agency); null when unclear."
     ),
 }
 

@@ -40,7 +40,7 @@ DISOWNED: set[int] = {466}
 # dealbreaker (not a soft "didn't grab me" pass, which the gate is meant to APPLY and
 # rank low). Where a role trips several gates, the expected name is its primary reason.
 NEGATIVE_LABELS: dict[int, str] = {
-    23:  "no_ml_platform",           # Wildcard — applied ML engineer
+    23:  "no_title_specialization",  # Wildcard — applied ML engineer (ML in title)
     72:  "no_data_focus",            # Head of Analytics Engineering
     73:  "no_fde",                   # Head of Client Engineering (implementation)
     76:  "no_data_focus",            # Head of Analytics Engineering
@@ -51,8 +51,8 @@ NEGATIVE_LABELS: dict[int, str] = {
     234: "java_primary",             # Principal Backend Engineer
     260: "java_primary",             # Senior Staff SWE - Risk
     279: "no_data_focus",            # Principal/Staff Engineer (Data)
-    304: "no_ml_platform",           # AI Engineering Manager (also title/data)
-    314: "no_ml_platform",           # ML Technical Lead
+    304: "no_title_specialization",  # AI Engineering Manager (AI in title)
+    314: "no_title_specialization",  # ML Technical Lead (ML in title)
     434: "no_ml_platform",           # EM (AI Enablement)
 }
 

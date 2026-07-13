@@ -308,6 +308,29 @@ apply-and-rank-low those, not veto them. All currently pass, so the set is a reg
 guard — a future extraction-slim or model swap that started applying a known dealbreaker
 now fails loudly.
 
+### 5i. Slimming the extraction to what policy uses
+
+The extractor asked for all ten features, but only five are consumed (`role_substance`
+for tiering; `industry / office_days_per_week / salary_gbp / primary_backend_language`
+for structured gates). The other five (`title`, `function`, `remote_policy`,
+`company_eng_headcount`, `company_stage`) were extracted-but-unused — measured at **25%
+of the response** and 11% of the system prompt. Dropping them (`features.py`) shrank the
+prompt 6,316 → 5,640 chars and, more importantly, cut the expensive output side by ~a
+quarter (output tokens are the serial, latency-dominating part of a call).
+
+Benchmarked against the labels before adopting (`slim_benchmark.py`, cached so re-runs
+are free): **30/30 labels preserved** (16 positive → apply, 14 negative → no), 3/3 on the
+surviving sample, total spend **~$0.16** (real ~$0.0023/call). The change was accepted.
+
+One honest caveat the benchmark surfaced: three ML/AI-*titled* negatives that previously
+tripped both `no_ml_platform` and `no_title_specialization` now trip only the title gate
+— the decision is unchanged (defense-in-depth), but the slim appears to have slightly
+weakened the ML-platform *rule* signal. Every ML/data negative label has the
+specialization in its title, so a generic-titled ML-platform role (caught by
+`no_ml_platform` alone) is the one case this benchmark can't vouch for. The three pins
+were relaxed to the stable `no_title_specialization`; adding a generic-titled ML negative
+is the natural next label.
+
 ### 5f. The real acceptance test
 
 `validate_gate.py --scorer gated` re-scores every role actually applied to or prepping
