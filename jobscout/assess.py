@@ -365,6 +365,37 @@ def consensus_assessment(assessments: list[Assessment]) -> Assessment:
     return rep
 
 
+def consensus_locked(assessments: list[Assessment], remaining: int) -> bool:
+    """True when `remaining` more assessments cannot change the majority decision
+    or the modal tier among the decision-winners — so voting can stop early.
+
+    This makes early-stopping exactly equivalent to a fixed K-way majority on the
+    two fields that drive the pipeline (decision, then tier): once a decision leads
+    by more than the votes still outstanding, no future run can catch it, so the
+    remaining calls are pure cost with no effect on the outcome. Only the derived
+    representative fields (fit/priority) can still shift — the same latitude
+    consensus_assessment already takes when it picks a median representative.
+
+    For K=3 this drops the third call whenever the first two agree on decision+tier.
+    """
+    from collections import Counter
+
+    if not assessments:
+        return False
+    dec_counts = Counter(a.decision for a in assessments)
+    top_dec, top_n = dec_counts.most_common(1)[0]
+    # An unseen decision could still take up to `remaining` future votes, so the
+    # leader is only locked when it strictly clears the best rival PLUS those votes.
+    best_rival = max((c for d, c in dec_counts.items() if d != top_dec), default=0)
+    if top_n <= best_rival + remaining:
+        return False
+    winners = [a for a in assessments if a.decision == top_dec]
+    tier_counts = Counter(a.tier_label for a in winners)
+    top_tier, top_tn = tier_counts.most_common(1)[0]
+    best_other_tier = max((c for t, c in tier_counts.items() if t != top_tier), default=0)
+    return top_tn > best_other_tier + remaining
+
+
 # ---------------------------------------------------------------------------
 # Producer
 # ---------------------------------------------------------------------------
@@ -441,9 +472,14 @@ class GatedScorer:
         ) from last_exc
 
     def score(self, listing: Listing) -> Score:
-        # Self-consistency: extract K times and vote. K=1 is the plain single call.
-        # Tolerate partial failure — a majority vote should still stand if one of the
-        # K extractions errors out; only give up if every attempt fails.
+        # Self-consistency vote with early stop: extract up to K times, but stop as
+        # soon as the decision and tier are locked — i.e. the repeats still to come
+        # cannot change the majority (see consensus_locked). This is exactly
+        # equivalent to a fixed K-way majority on decision/tier while skipping calls
+        # that can't affect the result; for K=3 it drops the third call whenever the
+        # first two agree (~30% fewer calls corpus-wide). K=1 is the plain single call.
+        # Tolerate partial failure — the vote still stands if a repeat errors out;
+        # only give up if every attempt fails.
         assessments = []
         last_exc: Exception | None = None
         for rep in range(self._repeats):
@@ -451,6 +487,8 @@ class GatedScorer:
                 assessments.append(assess(self._cfg, listing, self.extract(listing, rep)))
             except Exception as exc:
                 last_exc = exc
+            if consensus_locked(assessments, self._repeats - rep - 1):
+                break
         if not assessments:
             raise last_exc if last_exc else ValueError("extraction failed")
         a = consensus_assessment(assessments)

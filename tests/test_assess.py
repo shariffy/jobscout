@@ -17,6 +17,7 @@ from jobscout.assess import (
     build_extract_system,
     build_scorer,
     consensus_assessment,
+    consensus_locked,
     evaluate_gate,
     parse_extraction,
 )
@@ -463,8 +464,41 @@ def test_consensus_unanimous_not_flagged():
     assert not out.rationale.startswith("[consensus")
 
 
+def test_consensus_locked_two_agreeing_with_one_left():
+    # decision AND tier agree, 1 repeat outstanding -> the third can't change it.
+    votes = [_a("apply", "T1"), _a("apply", "T1")]
+    assert consensus_locked(votes, remaining=1) is True
+
+
+def test_consensus_locked_single_vote_not_locked_when_repeats_remain():
+    # one vote, one outstanding: a future run could still tie/flip it.
+    assert consensus_locked([_a("apply", "T1")], remaining=1) is False
+
+
+def test_consensus_locked_single_vote_locked_when_nothing_remains():
+    assert consensus_locked([_a("apply", "T1")], remaining=0) is True
+
+
+def test_consensus_locked_decision_split_not_locked():
+    votes = [_a("apply", "T1"), _a("no", "none")]
+    assert consensus_locked(votes, remaining=1) is False
+
+
+def test_consensus_locked_decision_agrees_but_tier_split_not_locked():
+    # both apply (decision locked) but different tiers with a repeat left: tier
+    # is not yet settled, so keep voting — matches the verified 2.09-calls rule.
+    votes = [_a("apply", "T1"), _a("apply", "T2")]
+    assert consensus_locked(votes, remaining=1) is False
+
+
+def test_consensus_locked_empty_is_false():
+    assert consensus_locked([], remaining=2) is False
+
+
 @patch("jobscout.llm.openai.OpenAI")
-def test_gated_scorer_repeats_calls_extract_k_times(mock_openai_cls):
+def test_gated_scorer_early_stops_when_first_two_agree(mock_openai_cls):
+    # Two agreeing votes lock decision+tier, so the third call is skipped — this is
+    # the ~30%-cheaper common case, provably identical to a fixed majority-of-3.
     client = MagicMock()
     mock_openai_cls.return_value = client
     client.chat.completions.create.return_value = mock_extract_response({
@@ -478,7 +512,29 @@ def test_gated_scorer_repeats_calls_extract_k_times(mock_openai_cls):
     cfg = make_cfg()
     cfg.ai.scorer_repeats = 3
     score = GatedScorer(cfg).score(make_listing())
-    assert client.chat.completions.create.call_count == 3
+    assert client.chat.completions.create.call_count == 2
+    assert score.decision == "apply"
+
+
+@patch("jobscout.assess.GatedScorer.extract")
+def test_gated_scorer_runs_third_call_when_first_two_disagree(mock_extract):
+    # rep0/rep1 disagree on decision, so nothing is locked and the tiebreak call runs.
+    yes = Extraction(
+        features={"role_substance": FeatureValue(value="leadership", confidence=0.9,
+                                                 evidence="lead")},
+        rules={}, summary="Head of Eng.",
+    )
+    no = Extraction(
+        features={"office_days_per_week": FeatureValue(value=5, confidence=1.0,
+                                                       evidence="onsite")},
+        rules={}, summary="Onsite.",
+    )
+    mock_extract.side_effect = [yes, no, yes]  # 2:1 apply wins after the third
+    cfg = make_cfg()
+    cfg.ai.scorer_repeats = 3
+    with patch("jobscout.llm.openai.OpenAI"):
+        score = GatedScorer(cfg).score(make_listing())
+    assert mock_extract.call_count == 3
     assert score.decision == "apply"
 
 

@@ -236,6 +236,29 @@ at ~1/3 the corpus cost and comparable latency (the 3 calls are independent, so
 parallelising them returns to ~3 s). It also degrades gracefully: flash-lite errored on
 ~6.5% of calls, and the vote still stood on the survivors.
 
+### 5g. Early-stop voting (free ~30% off the vote)
+
+A fixed majority-of-3 always pays for the third call — but once two of three runs
+agree on the decision *and* tier, the third mathematically cannot change either
+(`consensus_locked` in `jobscout/assess.py`): a 2-vs-1 majority is already settled, so
+the remaining call is pure cost. `GatedScorer.score` now stops as soon as decision+tier
+are locked. Replaying the production `score()` path over the on-disk extraction cache
+(119 listings × 3 stored repeats, **$0** in new calls) confirmed the equivalence:
+
+| strategy | decision+tier vs fixed-3 | calls/listing | proj. corpus |
+|---|--:|--:|--:|
+| fixed majority-of-3 | — | 3.00 | $4.49 |
+| **early-stop (decision+tier lock)** | **119/119 identical** | **2.09** | **~$3.13** |
+
+This is *exact* on the two fields that drive the pipeline, not an approximation — the
+lock condition is provable, so there is no accuracy trade to weigh. Only the derived
+representative fields (`fit_score`, within-tier `priority`) can shift when a listing stops
+at two runs, the same latitude `consensus_assessment` already takes picking a median
+representative. A *conservative* variant that also waited for the full policy signature
+(flags/priority/fit) to agree cost more (~2.35–2.52 calls) yet still couldn't guarantee
+those secondary fields — so it paid a premium to stabilise the fields that matter least.
+Rejected in favour of the decision+tier lock.
+
 ### 5f. The real acceptance test
 
 `validate_gate.py --scorer gated` re-scores every role actually applied to or prepping
@@ -260,6 +283,8 @@ Stronger than the 12-listing agreement, and it passed.
   the model choice itself.
 - **Self-consistency** (`scorer_repeats`) is now a first-class, config-driven capability,
   not a benchmark trick — the lever that lets a cheaper model match a stronger one.
+- **Early-stop voting** (`consensus_locked`) makes the majority vote cost ~2.09 calls
+  instead of a fixed 3 — a free ~30% off, provably identical on decision+tier (§5g).
 
 ---
 
