@@ -35,7 +35,26 @@ DISOWNED: set[int] = {466}
 
 # Known-dealbreaker roles: listing_id -> expected failing gate name ("" = any gate).
 # Kept in-file so the negative set is versioned with the gate rules it tests.
-NEGATIVE_LABELS: dict[int, str] = {}
+#
+# Sourced from roles you marked not_interested in Notion — each a genuine hard
+# dealbreaker (not a soft "didn't grab me" pass, which the gate is meant to APPLY and
+# rank low). Where a role trips several gates, the expected name is its primary reason.
+NEGATIVE_LABELS: dict[int, str] = {
+    23:  "no_ml_platform",           # Wildcard — applied ML engineer
+    72:  "no_data_focus",            # Head of Analytics Engineering
+    73:  "no_fde",                   # Head of Client Engineering (implementation)
+    76:  "no_data_focus",            # Head of Analytics Engineering
+    129: "no_data_focus",            # EM - Data Platform (also java_primary)
+    173: "no_fde",                   # Senior Manager, Solutions Engineering
+    178: "java_primary",             # Senior EM - Compliance
+    219: "no_title_specialization",  # AI Technical Lead - C++
+    234: "java_primary",             # Principal Backend Engineer
+    260: "java_primary",             # Senior Staff SWE - Risk
+    279: "no_data_focus",            # Principal/Staff Engineer (Data)
+    304: "no_ml_platform",           # AI Engineering Manager (also title/data)
+    314: "no_ml_platform",           # ML Technical Lead
+    434: "no_ml_platform",           # EM (AI Enablement)
+}
 
 
 def _ground_truth(store: Store, statuses: list[str]) -> list[tuple[int, str, str]]:
