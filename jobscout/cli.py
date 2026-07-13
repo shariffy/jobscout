@@ -757,6 +757,7 @@ def prune(
         console.print("[red]Notion not configured.[/]")
         raise typer.Exit(1)
 
+    from .models import Application
     from .notion_sync import NotionSync
     ns = NotionSync(token=cfg.notion.token, database_id=cfg.notion.database_id)
 
@@ -767,32 +768,38 @@ def prune(
                    COALESCE(s.fit_score, -1) AS fit_score, a.status
             FROM applications a
             JOIN listings l ON l.id = a.listing_id
-            LEFT JOIN (
-                SELECT listing_id, MAX(fit_score) AS fit_score FROM scores GROUP BY listing_id
-            ) s ON s.listing_id = a.listing_id
+            LEFT JOIN scores s ON s.listing_id = a.listing_id
             WHERE a.notion_page_id IS NOT NULL
               AND (a.status IS NULL OR a.status NOT IN ('applied', 'interviewing', 'offer'))
               AND (s.fit_score IS NULL OR s.fit_score < ?)
         """, (min_fit,)).fetchall()
 
-    if not rows:
-        console.print(f"[green]Nothing to prune (all Notion pages score ≥ {min_fit}).[/]")
-        return
+        if not rows:
+            console.print(f"[green]Nothing to prune (all Notion pages score ≥ {min_fit}).[/]")
+            return
 
-    console.print(f"[bold]{'Would archive' if dry_run else 'Archiving'} {len(rows)} Notion pages below {min_fit}:[/]\n")
-    archived = 0
-    for row in rows:
-        lid, page_id, title, company, fit, status = row
-        label = f"  {fit:3d}  {title[:45]} @ {company}"
-        if dry_run:
-            console.print(f"[dim]{label}[/]")
-        else:
-            try:
-                ns.archive_page(page_id)
+        console.print(f"[bold]{'Would archive' if dry_run else 'Archiving'} {len(rows)} Notion pages below {min_fit}:[/]\n")
+        archived = 0
+        for row in rows:
+            lid, page_id, title, company, fit, status = row
+            label = f"  {fit:3d}  {title[:45]} @ {company}"
+            if dry_run:
                 console.print(f"[dim]{label}[/]")
-                archived += 1
-            except Exception as exc:
-                console.print(f"[yellow]  skip {lid}: {exc}[/]")
+            else:
+                try:
+                    ns.archive_page(page_id)
+                    # Mirror the archive locally so it doesn't come back as a stale
+                    # "shortlisted" row on the next rescore/shortlist pass — a page
+                    # archived here without this used to desync silently forever.
+                    existing = store.get_application(lid)
+                    app_row = (existing or Application(listing_id=lid)).model_copy(
+                        update={"status": "not_interested"}
+                    )
+                    store.upsert_application(app_row)
+                    console.print(f"[dim]{label}[/]")
+                    archived += 1
+                except Exception as exc:
+                    console.print(f"[yellow]  skip {lid}: {exc}[/]")
 
-    if not dry_run:
-        console.print(f"\n[green]Archived {archived} pages.[/]")
+        if not dry_run:
+            console.print(f"\n[green]Archived {archived} pages.[/]")
