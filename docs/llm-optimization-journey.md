@@ -378,7 +378,53 @@ Stronger than the 12-listing agreement, and it passed.
 
 ---
 
-## 8. Reproducing
+## 8. Local inference bake-off (Ollama)
+
+A candidate track — explored, **not adopted**. `ollama_bakeoff.py` runs the same gate
+policy and grounding checks against a local Ollama model. Hardware: fanless M2 Air, 16
+GB — these times are a lower bound, not portable.
+
+**Round 1 (n=2, five models)** screened for basic JSON competence: qwen3:8b (thinking
+model, ~150–250s/call, decision flip), qwen2.5:7b-instruct (nulls required
+`confidence`), llama3.2:3b (flattens the nested schema to bare scalars), hermes3:8b
+(unescaped `""quotes""` break JSON) all failed differently. **granite3.3:2b** looked
+clean (4/5 ok, 0 flips) and fastest (~5–9s/call) — but n=2 was too small to trust.
+
+**Round 2 (granite3.3:2b, n=10)** proved it: only **19/30 calls (63%) succeeded**, two
+listings failing all 3 repeats. Three failure modes: long JDs (>10k chars) get no JSON
+attempt at all (context-limit collision), plus intermittent schema flattening and
+key-mixing on shorter ones.
+
+**Round 3** fixed the *shape*: raised `OLLAMA_CONTEXT_LENGTH` to 16384 and added
+grammar-constrained decoding (`response_format={"type": "json_schema", ...}` via
+`extra_body` — Ollama's bare `format` field only works on its native `/api/chat`, not
+the OpenAI-compatible endpoint used here). Re-ran granite3.3:2b, llama3.2:3b, and
+phi4-mini, all structured:
+
+| model | errors | decision flip | grounding issues | avg time/call |
+|---|--:|--:|--:|--:|
+| granite3.3:2b | 0/30 | 60% | 89 | 36.6s |
+| llama3.2:3b | 0/30 | 70% | 23 | 21.1s |
+| phi4-mini | 0/30 | 40% | 50 | 28.1s |
+
+Errors vanished, but that exposed the real problem: round 1's "0 flips" was
+**survivorship bias** — only parseable calls got scored. Every call now succeeds, and
+40–70% decision flip surfaces — worse than *any* model in the §5c cloud sweep. phi4-mini
+was the best of the three (best flip rate, first local model past the cloud floor) but
+still far short of usable, and grounding issues stayed high regardless.
+
+**Verdict: shelved.** Three lineages (IBM, Meta, Microsoft) at 2–4B all land in the same
+failure zone once shape stops being the confound — a capacity ceiling, not a fixable
+config. Structured output trades an honest failure (null, rejected parse) for a silent
+one (schema-valid but fabricated), shifting the burden onto grounding checks. All local
+models removed after this result.
+
+Kept in the script: `--local-only` (skip the paid cloud arm), `--structured` (the
+schema-constrained mode above), and truncation reported as its own error.
+
+---
+
+## 9. Reproducing
 
 Production tooling (committed): `validate_gate.py` (ground-truth regression gate),
 `bakeoff.py` (cross-provider harness), `migrate_notion.py` (one-shot board migration).
@@ -388,6 +434,11 @@ The exploratory analysis scripts behind §5 (`extraction_sweep.py`, `compare_sco
 and are intentionally **not** committed; their findings are captured here. All ran on a
 12-listing stratified sample and through OpenRouter, keyed by an on-disk result cache so
 re-runs never re-paid completed calls.
+
+`ollama_bakeoff.py` (§8) is the local-inference analogue of `bakeoff.py`: same
+gate/priority policy, an on-disk result cache keyed by model + prompt + listing content
++ repeat, and `--local-only` to compare local models against each other without ever
+calling the paid cloud reference.
 
 > **Caveats.** The headline numbers rest on a 12-listing sample plus the 17-role ground
 > truth — strong signal, not proof. "Agreement" is measured against Sonnet as a silver
