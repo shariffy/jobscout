@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from typing import Any
@@ -237,6 +238,40 @@ def evaluate_gates(
     return [evaluate_gate(g, extraction.features, extraction.rules) for g in gates]
 
 
+def _apply_match_keywords(
+    gates: list[GateConfig], listing: Listing, extraction: Extraction
+) -> None:
+    """Backfill structured gate features from listing keywords.
+
+    An explicit keyword hit always wins — it overrides a weak or wrong extraction
+    (e.g. 'private equity' in the text even when the model said fintech).
+    """
+    text = _listing_text(listing).casefold()
+    for gate in gates:
+        if not gate.match_keywords or not gate.feature:
+            continue
+        if isinstance(gate.match_keywords, dict):
+            keyword_map = gate.match_keywords.items()
+        else:
+            assigned_default = (
+                gate.keyword_value if gate.keyword_value is not None else gate.value
+            )
+            keyword_map = ((kw, assigned_default) for kw in gate.match_keywords)
+        for kw, assigned in keyword_map:
+            k = str(kw).casefold()
+            if " " in k:
+                matched = k in text
+            else:
+                matched = re.search(rf"\b{re.escape(k)}\b", text) is not None
+            if matched:
+                extraction.features[gate.feature] = FeatureValue(
+                    value=assigned,
+                    confidence=0.85,
+                    evidence=f"listing mentions {kw}",
+                )
+                break
+
+
 # ---------------------------------------------------------------------------
 # Stage 3 — priority engine (pure Python)
 # ---------------------------------------------------------------------------
@@ -284,6 +319,7 @@ def _fit_band(tier_idx: int | None) -> tuple[int, int]:
 
 def assess(cfg: Config, listing: Listing, extraction: Extraction) -> Assessment:
     """Stages 2 + 3: turn one extraction into a decision + priority (+ derived fit)."""
+    _apply_match_keywords(cfg.gates, listing, extraction)
     results = evaluate_gates(cfg.gates, extraction)
     by_name = {g.name: g for g in cfg.gates}
 

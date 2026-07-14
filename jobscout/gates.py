@@ -6,7 +6,7 @@ feature vocabulary in features.py; the priority tiers rank the apply set.
 """
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any, Literal, Union
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -32,6 +32,11 @@ class GateConfig(BaseModel):
     # A fail verdict below this confidence is treated as unknown, so a hard fail
     # only ever comes from a high-confidence detection.
     min_confidence: float = 0.7
+    # Structured gates only: keyword hits in the listing text set the feature before
+    # evaluation. A list applies one shared value (keyword_value, else gate value);
+    # a dict maps each keyword/phrase to its own value (e.g. jvm => java).
+    match_keywords: Union[list[str], dict[str, Any]] = Field(default_factory=list)
+    keyword_value: Any = None
 
     @model_validator(mode="after")
     def check_shape(self) -> GateConfig:
@@ -50,6 +55,11 @@ class GateConfig(BaseModel):
                 )
             if self.op not in GATE_OPS:
                 raise ValueError(f"gate {self.name!r}: op must be one of {GATE_OPS}")
+        if self.rule and (self.match_keywords or self.keyword_value is not None):
+            raise ValueError(
+                f"gate {self.name!r}: match_keywords/keyword_value only apply to structured "
+                f"gates (feature/op/value), not rule-based gates"
+            )
         return self
 
 

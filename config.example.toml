@@ -74,9 +74,9 @@ db_path = "jobscout.db"
 # how good everything else is. Two forms:
 #
 #   Structured — a predicate over a canonical extracted feature. Features the LLM
-#   always extracts (see jobscout/features.py): title, function, role_substance,
-#   office_days_per_week, remote_policy, salary_gbp, primary_backend_language,
-#   industry, company_eng_headcount, company_stage.
+#   always extracts (see jobscout/features.py): role_substance, office_days_per_week,
+#   salary_gbp, industry. Language/stack vetoes use natural-language rules (e.g.
+#   no_blocked_stack), not a structured feature.
 #   Ops: <= >= == != in not_in contains.
 #
 #   Natural-language — anything the schema can't express, as a "Reject only if …"

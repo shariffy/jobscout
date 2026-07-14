@@ -12,6 +12,7 @@ from jobscout.assess import (
     FeatureValue,
     GatedScorer,
     RuleVerdict,
+    _apply_match_keywords,
     assess,
     assign_tier,
     build_extract_system,
@@ -32,7 +33,8 @@ GATES = [
     dict(name="office", feature="office_days_per_week", op="<=", value=3, on_unknown="pass_flag"),
     dict(name="salary_floor", feature="salary_gbp", op=">=", value=110000),
     dict(name="industry", feature="industry", op="not_in", value=["crypto", "gambling"]),
-    dict(name="java_primary", feature="primary_backend_language", op="!=", value="java"),
+    dict(name="no_blocked_stack",
+         rule="Reject only if Java/JVM, Go, Rust, Kotlin, Scala, Ruby, PHP, C/C++, or C# is a hard requirement."),
     dict(name="no_agency", rule="Reject only if pure consulting/agency work."),
 ]
 
@@ -95,6 +97,15 @@ def test_gate_config_rejects_bad_op():
         GateConfig(name="bad", feature="salary_gbp", op="~=", value=1)
 
 
+def test_gate_config_rejects_match_keywords_on_rule_gate():
+    with pytest.raises(ValueError, match="match_keywords"):
+        GateConfig(
+            name="no_blocked_stack",
+            rule="Reject only if Java is a hard requirement.",
+            match_keywords=["java"],
+        )
+
+
 # --- structured gate evaluation ----------------------------------------------
 
 def gate(name) -> GateConfig:
@@ -149,9 +160,110 @@ def test_not_in_gate_passes_on_non_member():
     assert r.status == "pass"
 
 
-def test_neq_gate_fails_on_match():
-    r = evaluate_gate(gate("java_primary"), {"primary_backend_language": fv("Java")}, {})
+def test_no_blocked_stack_rule_fail():
+    verdicts = {"no_blocked_stack": RuleVerdict(verdict="fail", confidence=0.95, evidence="must have Go")}
+    r = evaluate_gate(gate("no_blocked_stack"), {}, verdicts)
     assert r.status == "fail"
+
+
+def test_no_blocked_stack_rule_pass():
+    verdicts = {"no_blocked_stack": RuleVerdict(verdict="pass", confidence=0.9)}
+    r = evaluate_gate(gate("no_blocked_stack"), {}, verdicts)
+    assert r.status == "pass"
+
+
+def test_industry_private_equity_fails():
+    industry_gate = GateConfig(
+        name="industry", feature="industry", op="not_in",
+        value=["crypto", "gambling", "private_equity"],
+    )
+    r = evaluate_gate(industry_gate, {"industry": fv("private_equity")}, {})
+    assert r.status == "fail"
+
+
+def test_match_keywords_private_equity_trips_industry_gate():
+    industry_gate = GateConfig(
+        name="industry", feature="industry", op="not_in",
+        value=["crypto", "gambling", "private_equity"],
+        match_keywords=["private equity"],
+        keyword_value="private_equity",
+    )
+    listing = make_listing(
+        description="Software for the world's leading investment firms across private equity, VC, credit.",
+    )
+    ext = extraction(features={"industry": fv(None)})
+    _apply_match_keywords([industry_gate], listing, ext)
+    r = evaluate_gate(industry_gate, ext.features, {})
+    assert r.status == "fail"
+    assert ext.features["industry"].value == "private_equity"
+
+
+def test_assess_ohme_jvm_soft_mention_passes_when_rule_passes():
+    cfg = make_cfg(gates=GATES + [
+        dict(name="industry", feature="industry", op="not_in",
+             value=["crypto", "gambling", "private_equity"]),
+    ])
+    listing = make_listing(
+        title="Head of Engineering",
+        company="Ohme",
+        description="Demonstrable knowledge in cloud/distributed systems ideally in JVM at high-scale.",
+    )
+    e = clean_extraction()
+    e.rules["no_blocked_stack"] = RuleVerdict(
+        verdict="pass", confidence=0.9,
+        evidence="ideally in JVM is a soft mention, not a hard requirement",
+    )
+    a = assess(cfg, listing, e)
+    assert a.decision == "apply"
+    assert not any(f == "gate-fail-no_blocked_stack" for f in a.flags)
+
+
+def test_assess_malt_sem_hands_on_ideally_java_fails():
+    """Malt #178: hands-on SEM with 'ideally java/Kotlin' must still reject."""
+    cfg = make_cfg()
+    listing = make_listing(
+        title="Senior Engineering Manager - Compliance",
+        company="Malt",
+        description=(
+            "Hands-on Manager: You maintain your technical mentorship through code reviews "
+            "and architecture discussions. You likely have a strong backend foundation "
+            "(ideally in java/Kotlin) and a passion for engineering excellence."
+        ),
+    )
+    e = clean_extraction()
+    e.rules["no_blocked_stack"] = RuleVerdict(
+        verdict="fail", confidence=0.9,
+        evidence="hands-on EM with strong backend foundation ideally in java/Kotlin",
+    )
+    a = assess(cfg, listing, e)
+    assert a.decision == "no"
+    assert "gate-fail-no_blocked_stack" in a.flags
+
+
+def test_assess_gener8_vp_team_stack_description_passes():
+    """Gener8 #124: Golang/Kotlin describe the team stack; VP hands-on-when-needed is not EM case."""
+    cfg = make_cfg()
+    listing = make_listing(
+        title="VP of Engineering",
+        company="Gener8",
+        description=(
+            "On the frontend we use React, Next.js and TypeScript. "
+            "On the backend we use Golang to serve RESTful APIs. "
+            "Our mobile apps have been built natively using Swift and Kotlin. "
+            "Providing technical leadership and able to be hands on and in the detail when needed. "
+            "Reviewing other engineer's code, making suggestions. "
+            "7+ years experience as a software engineer working with native mobile or web technologies. "
+            "3+ years experience in an engineering leadership role."
+        ),
+    )
+    e = clean_extraction()
+    e.rules["no_blocked_stack"] = RuleVerdict(
+        verdict="pass", confidence=0.9,
+        evidence="Golang/Kotlin are team stack; VP may review code but no backend-foundation requirement on candidate",
+    )
+    a = assess(cfg, listing, e)
+    assert a.decision == "apply"
+    assert not any(f == "gate-fail-no_blocked_stack" for f in a.flags)
 
 
 def test_salary_gate_passes_at_floor():
@@ -198,10 +310,12 @@ def clean_extraction() -> Extraction:
             "office_days_per_week": fv(2),
             "salary_gbp": fv(130000),
             "industry": fv("music"),
-            "primary_backend_language": fv("typescript"),
             "role_substance": fv("leadership"),
         },
-        rules={"no_agency": RuleVerdict(verdict="pass", confidence=0.9)},
+        rules={
+            "no_agency": RuleVerdict(verdict="pass", confidence=0.9),
+            "no_blocked_stack": RuleVerdict(verdict="pass", confidence=0.9),
+        },
     )
 
 
@@ -328,6 +442,8 @@ def test_build_extract_system_lists_features_and_rules():
     system = build_extract_system(make_cfg().gates)
     assert "office_days_per_week" in system
     assert "no_agency: Reject only if pure consulting/agency work." in system
+    assert "no_blocked_stack:" in system
+    assert "primary_backend_language" not in system
 
 
 def test_parse_extraction_tolerates_junk():
@@ -366,11 +482,13 @@ def test_gated_scorer_score(mock_openai_cls):
             "office_days_per_week": {"value": 2, "confidence": 1.0, "evidence": "2 days"},
             "salary_gbp": {"value": 140000, "confidence": 1.0, "evidence": "£120–140k"},
             "industry": {"value": "music", "confidence": 0.9, "evidence": "music startup"},
-            "primary_backend_language": {"value": None, "confidence": 0.0, "evidence": ""},
             "role_substance": {"value": "leadership", "confidence": 0.9,
                                "evidence": "lead the team"},
         },
-        "rules": {"no_agency": {"verdict": "pass", "confidence": 0.9, "evidence": "own product"}},
+        "rules": {
+            "no_agency": {"verdict": "pass", "confidence": 0.9, "evidence": "own product"},
+            "no_blocked_stack": {"verdict": "pass", "confidence": 0.9, "evidence": "no hard stack req"},
+        },
         "summary": "Head of Engineering at a music startup.",
     })
 
@@ -382,8 +500,8 @@ def test_gated_scorer_score(mock_openai_cls):
     assert score.fit_score >= 70  # derived compat: apply <=> fit >= 70
     assert score.tier == "bulk"
     assert len(score.gate_results) == 5
-    # java_primary was null -> unknown with on_unknown=pass: applied, penalised
-    assert score.fit_score == 98
+    # no_blocked_stack passed; office unknown flagged but on_unknown=pass_flag
+    assert score.fit_score == 100
 
 
 @patch("jobscout.llm.openai.OpenAI")

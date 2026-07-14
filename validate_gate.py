@@ -44,16 +44,18 @@ NEGATIVE_LABELS: dict[int, str] = {
     72:  "no_data_focus",            # Head of Analytics Engineering
     73:  "no_fde",                   # Head of Client Engineering (implementation)
     76:  "no_data_focus",            # Head of Analytics Engineering
-    129: "no_data_focus",            # EM - Data Platform (also java_primary)
+    129: "no_data_focus",            # EM - Data Platform (also no_blocked_stack)
     173: "no_fde",                   # Senior Manager, Solutions Engineering
-    178: "java_primary",             # Senior EM - Compliance
+    178: "no_blocked_stack",         # Senior EM - Compliance
     219: "no_title_specialization",  # AI Technical Lead - C++
-    234: "java_primary",             # Principal Backend Engineer
-    260: "java_primary",             # Senior Staff SWE - Risk
+    234: "no_blocked_stack",         # Principal Backend Engineer
+    260: "no_blocked_stack",         # Senior Staff SWE - Risk
     279: "no_data_focus",            # Principal/Staff Engineer (Data)
     304: "no_title_specialization",  # AI Engineering Manager (AI in title)
     314: "no_title_specialization",  # ML Technical Lead (ML in title)
     434: "no_ml_platform",           # EM (AI Enablement)
+    892: "no_blocked_stack",         # FYST — Go as primary stack
+    898: "industry",                 # Atominvest — PE/investment software
 }
 
 

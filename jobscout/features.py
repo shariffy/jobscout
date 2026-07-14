@@ -12,10 +12,10 @@ from __future__ import annotations
 ROLE_SUBSTANCES = ["leadership", "founding", "ic", "management"]
 
 # Only the features some [[gate]] or the tiering actually consumes are extracted —
-# role_substance (tiering) plus the four structured-gate inputs below. Five formerly
-# extracted-but-unused fields (title, function, remote_policy, company_eng_headcount,
-# company_stage) were dropped: they cost ~25% of the response for no policy effect.
-# Add a feature back here the moment a gate or tier needs it.
+# role_substance (tiering) plus three structured-gate inputs below. Dropped fields
+# (primary_backend_language, title, function, remote_policy, company_eng_headcount,
+# company_stage) cost tokens for no policy effect — language vetoes use the
+# no_blocked_stack natural-language rule instead.
 FEATURES: dict[str, str] = {
     "role_substance": (
         "What the role ACTUALLY is, regardless of its title label: 'leadership' = leads an "
@@ -40,13 +40,10 @@ FEATURES: dict[str, str] = {
         "Stated annual salary in GBP as a number — use the TOP of a stated range. null when "
         "unstated, non-annual, or in a currency you cannot confidently convert."
     ),
-    "primary_backend_language": (
-        "The primary required backend language (lowercase, e.g. python, java, go, typescript); "
-        "null when none is required or several are equally acceptable."
-    ),
     "industry": (
         "The company's industry, lowercase (e.g. fintech, music, crypto, gambling, healthcare, "
-        "devtools); null when unclear."
+        "devtools, private_equity for investment/asset-management software sold to PE/VC firms); "
+        "null when unclear."
     ),
 }
 
