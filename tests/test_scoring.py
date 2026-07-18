@@ -1,15 +1,23 @@
-"""Scoring tests — OpenRouter (OpenAI-compatible) client mocked, no real API calls."""
+"""Scoring tests — provider clients mocked (OpenAI-compatible), no real API calls."""
 import json
 from unittest.mock import MagicMock, patch
 
 from jobscout.config import AIConfig, Config, StoreConfig, ProfileConfig
+from jobscout.llm import _client_cache
 from jobscout.models import CandidateProfile, Listing
 from jobscout.scoring import BulkScorer, _parse_score
 
 
 def make_cfg(**ai_kwargs) -> Config:
+    _client_cache.clear()  # each test gets a fresh mocked client per provider
     cfg = Config()
-    defaults = dict(openrouter_api_key="test-key", bulk_model="anthropic/claude-haiku-4-5")
+    defaults = dict(
+        api_keys={
+            "openrouter": "test-key", "requesty": "test-key",
+            "google": "test-key", "anthropic": "test-key",
+        },
+        bulk_model="anthropic/claude-haiku-4-5",
+    )
     defaults.update(ai_kwargs)
     cfg.ai = AIConfig(**defaults)
     return cfg
@@ -102,7 +110,8 @@ def test_bulk_scorer_returns_score(mock_openai_cls):
 
 
 @patch("jobscout.llm.openai.OpenAI")
-def test_bulk_scorer_uses_openrouter_base_url(mock_openai_cls):
+def test_bulk_scorer_uses_openrouter_base_url_by_default(mock_openai_cls):
+    """A bare model slug (no "provider:" prefix) routes to openrouter."""
     mock_client = MagicMock()
     mock_openai_cls.return_value = mock_client
     mock_client.chat.completions.create.return_value = mock_response(75, "Good.", [])
@@ -112,6 +121,21 @@ def test_bulk_scorer_uses_openrouter_base_url(mock_openai_cls):
     init_kwargs = mock_openai_cls.call_args.kwargs
     assert init_kwargs["base_url"] == "https://openrouter.ai/api/v1"
     assert init_kwargs["api_key"] == "test-key"
+
+
+@patch("jobscout.llm.openai.OpenAI")
+def test_bulk_scorer_routes_by_provider_prefix(mock_openai_cls):
+    mock_client = MagicMock()
+    mock_openai_cls.return_value = mock_client
+    mock_client.chat.completions.create.return_value = mock_response(75, "Good.", [])
+
+    cfg = make_cfg(bulk_model="google:gemini-3.1-flash-lite")
+    BulkScorer(cfg, make_profile()).score(make_listing())
+
+    init_kwargs = mock_openai_cls.call_args.kwargs
+    assert init_kwargs["base_url"] == "https://generativelanguage.googleapis.com/v1beta/openai/"
+    call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+    assert call_kwargs["model"] == "gemini-3.1-flash-lite"  # prefix stripped before the API call
 
 
 @patch("jobscout.llm.openai.OpenAI")
@@ -127,22 +151,48 @@ def test_bulk_scorer_sends_system_and_user_messages(mock_openai_cls):
     messages = call_kwargs["messages"]
     assert messages[0]["role"] == "system"
     assert messages[1]["role"] == "user"
-    # cost accounting is always requested; reasoning omitted when unset
-    assert call_kwargs["extra_body"]["usage"] == {"include": True}
-    assert "reasoning" not in call_kwargs["extra_body"]
+    # reasoning_effort omitted when unset (Requesty returns usage.cost by default)
+    assert "reasoning_effort" not in call_kwargs["extra_body"]
 
 
 @patch("jobscout.llm.openai.OpenAI")
-def test_bulk_scorer_passes_reasoning_config(mock_openai_cls):
+def test_bulk_scorer_passes_reasoning_config_openrouter_shape(mock_openai_cls):
     mock_client = MagicMock()
     mock_openai_cls.return_value = mock_client
     mock_client.chat.completions.create.return_value = mock_response(75, "Good.", [])
 
-    cfg = make_cfg(bulk_reasoning={"effort": "low"})
+    cfg = make_cfg(bulk_reasoning_effort="low")  # default provider: openrouter
     BulkScorer(cfg, make_profile()).score(make_listing())
 
     call_kwargs = mock_client.chat.completions.create.call_args.kwargs
     assert call_kwargs["extra_body"]["reasoning"] == {"effort": "low"}
+    assert call_kwargs["extra_body"]["usage"] == {"include": True}
+
+
+@patch("jobscout.llm.openai.OpenAI")
+def test_bulk_scorer_passes_reasoning_config_flat_shape(mock_openai_cls):
+    mock_client = MagicMock()
+    mock_openai_cls.return_value = mock_client
+    mock_client.chat.completions.create.return_value = mock_response(75, "Good.", [])
+
+    cfg = make_cfg(bulk_model="requesty:google/gemini-3.5-flash", bulk_reasoning_effort="low")
+    BulkScorer(cfg, make_profile()).score(make_listing())
+
+    call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+    assert call_kwargs["extra_body"]["reasoning_effort"] == "low"
+
+
+@patch("jobscout.llm.openai.OpenAI")
+def test_bulk_scorer_ignores_reasoning_for_provider_without_support(mock_openai_cls):
+    mock_client = MagicMock()
+    mock_openai_cls.return_value = mock_client
+    mock_client.chat.completions.create.return_value = mock_response(75, "Good.", [])
+
+    cfg = make_cfg(bulk_model="anthropic:claude-haiku-4-5", bulk_reasoning_effort="low")
+    BulkScorer(cfg, make_profile()).score(make_listing())
+
+    call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+    assert call_kwargs["extra_body"] == {}
 
 
 @patch("jobscout.llm.openai.OpenAI")

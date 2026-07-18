@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import sys
+
 from .config import Config
-from .llm import openrouter_client, with_retries
+from .llm import extra_body_for, resolve_route, with_retries
 from .models import CandidateProfile, Listing, Score
 from .scoring import _listing_text, _profile_text
 
@@ -57,25 +59,36 @@ def generate_prep(
     profile: CandidateProfile,
     score: Score | None = None,
 ) -> str:
-    client = openrouter_client(cfg)
+    route = resolve_route(cfg, cfg.ai.prep_model)
 
     user_content = f"Candidate profile:\n{_profile_text(profile)}\n\n---\n\nJob listing:\n{_listing_text(listing)}"
     if score:
         user_content += f"\n\nFit score: {score.fit_score}/100 — {score.rationale}"
 
-    # OpenRouter's server-side web_search tool works with any model: the model
-    # decides when to search, OpenRouter runs it, and the grounded answer comes
-    # back in message.content. Passed via extra_body so the OpenRouter-specific
-    # tool type isn't touched by the OpenAI SDK's tool validation.
+    # Server-side web search (when the provider offers one): the model decides
+    # when to search, the provider runs it, and the grounded answer comes back in
+    # message.content. Passed via extra_body so the tool type isn't touched by the
+    # OpenAI SDK's function-tool validation. Direct provider APIs (google,
+    # anthropic) have no such tool here — the brief runs ungrounded on those.
+    extra_body = extra_body_for(route.provider, None)
+    if route.provider.web_search_tool is not None:
+        extra_body["tools"] = [route.provider.web_search_tool]
+    else:
+        print(
+            f"[prep] {route.provider_name} has no server-side web search — "
+            "generating an ungrounded brief (the 'who to contact' section may be weaker).",
+            file=sys.stderr,
+        )
+
     response = with_retries(
-        lambda: client.chat.completions.create(
-            model=cfg.ai.prep_model,
+        lambda: route.client.chat.completions.create(
+            model=route.model,
             max_tokens=6000,
             messages=[
                 {"role": "system", "content": _SYSTEM},
                 {"role": "user", "content": user_content},
             ],
-            extra_body={"tools": [{"type": "openrouter:web_search"}]},
+            extra_body=extra_body,
         ),
         label=cfg.ai.prep_model,
     )

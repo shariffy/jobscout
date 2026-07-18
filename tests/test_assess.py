@@ -24,6 +24,7 @@ from jobscout.assess import (
 )
 from jobscout.config import AIConfig, Config
 from jobscout.gates import GateConfig
+from jobscout.llm import _client_cache
 from jobscout.models import Listing
 from jobscout.scoring import BulkScorer, content_hash
 
@@ -49,8 +50,9 @@ TIERS = [
 
 
 def make_cfg(**overrides) -> Config:
+    _client_cache.clear()  # each test gets a fresh mocked client per provider
     data = {
-        "ai": {"openrouter_api_key": "test-key", "bulk_model": "test/model", "scorer": "gated"},
+        "ai": {"api_keys": {"openrouter": "test-key"}, "bulk_model": "test/model", "scorer": "gated"},
         "gates": GATES,
         "priority": {"tiers": TIERS, "unknown_penalty": 2},
     }
@@ -532,7 +534,7 @@ def test_build_scorer_selects_by_config(mock_openai_cls):
     assert isinstance(build_scorer(make_cfg(), profile), GatedScorer)
 
     additive = make_cfg()
-    additive.ai = AIConfig(openrouter_api_key="k", scorer="additive")
+    additive.ai = AIConfig(api_keys={"openrouter": "k"}, bulk_model="test/model", scorer="additive")
     assert isinstance(build_scorer(additive, profile), BulkScorer)
 
 

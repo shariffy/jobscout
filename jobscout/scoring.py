@@ -4,7 +4,7 @@ import json
 from datetime import UTC, datetime
 
 from .config import Config, assessment_config_hash
-from .llm import openrouter_client, with_retries
+from .llm import extra_body_for, resolve_route, with_retries
 from .models import CandidateProfile, Listing, Score
 
 _SYSTEM_TEMPLATE = """\
@@ -238,19 +238,19 @@ def _parse_score(text: str) -> dict:
 
 
 class BulkScorer:
-    """Score listings against a candidate profile via OpenRouter.
+    """Score listings against a candidate profile.
 
-    OpenRouter exposes an OpenAI-compatible chat.completions surface, so any model
-    slug it serves (Anthropic, Google, DeepSeek, Qwen, …) works through one client.
-    Configure the slug with ai.bulk_model and optional thinking with ai.bulk_reasoning.
+    ai.bulk_model is a "provider:model" string (see jobscout/llm.py); any provider
+    in PROVIDERS works through the same OpenAI-compatible client. Configure
+    optional thinking with ai.bulk_reasoning_effort.
     """
 
     def __init__(self, cfg: Config, profile: CandidateProfile) -> None:
         self._cfg = cfg
         self._profile = profile
-        self._client = openrouter_client(cfg)
+        self._route = resolve_route(cfg, cfg.ai.bulk_model)
         self._system = _build_system(cfg, profile)
-        self._reasoning = cfg.ai.bulk_reasoning
+        self._reasoning_effort = cfg.ai.bulk_reasoning_effort
         self._version = assessment_config_hash(cfg)
 
     def score(self, listing: Listing) -> Score:
@@ -258,21 +258,15 @@ class BulkScorer:
             {"role": "system", "content": self._system},
             {"role": "user", "content": f"Score this listing:\n\n{_listing_text(listing)}"},
         ]
-        # usage.include asks OpenRouter for the real charged cost; reasoning (when
-        # set) controls per-model thinking. Both are passed through extra_body.
-        extra_body: dict = {"usage": {"include": True}}
-        if self._reasoning is not None:
-            extra_body["reasoning"] = self._reasoning
+        extra_body = extra_body_for(self._route.provider, self._reasoning_effort)
 
         last_exc: Exception | None = None
         raw = ""
         for attempt in range(2):
             response = with_retries(
-                lambda: self._client.chat.completions.create(
-                    model=self._cfg.ai.bulk_model,
+                lambda: self._route.client.chat.completions.create(
+                    model=self._route.model,
                     messages=messages,
-                    # Cap the reservation: without it OpenRouter holds the model's
-                    # full 65k output budget against the account balance per call.
                     max_tokens=4096,
                     extra_body=extra_body,
                 ),

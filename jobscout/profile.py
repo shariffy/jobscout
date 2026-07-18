@@ -6,7 +6,7 @@ from pathlib import Path
 from pypdf import PdfReader
 
 from .config import Config
-from .llm import openrouter_client, with_retries
+from .llm import resolve_route, with_retries
 from .models import CandidateProfile
 
 _CACHE_FILENAME = "candidate_profile.json"
@@ -59,10 +59,10 @@ def build_profile(cfg: Config, force: bool = False) -> CandidateProfile:
 
     user_prompt = f"## CV\n\n{cv_text}\n\n## Candidate's stated goals\n\n{goals}"
 
-    client = openrouter_client(cfg)
+    route = resolve_route(cfg, cfg.ai.deep_model)
     response = with_retries(
-        lambda: client.chat.completions.create(
-            model=cfg.ai.deep_model,
+        lambda: route.client.chat.completions.create(
+            model=route.model,
             max_tokens=4096,
             messages=[
                 {"role": "system", "content": _SYSTEM},

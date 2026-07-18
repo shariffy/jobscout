@@ -72,8 +72,7 @@ def _ground_truth(store: Store, statuses: list[str]) -> list[tuple[int, str, str
 
 
 def run_additive(cfg, args) -> None:
-    from bakeoff import OPENROUTER_MODELS, _consistency_violations, score_openrouter
-    from jobscout.llm import openrouter_client
+    from bakeoff import OPENROUTER_MODELS, _consistency_violations, openrouter_client, score_openrouter
     from jobscout.profile import build_profile
     from jobscout.scoring import _build_system
 

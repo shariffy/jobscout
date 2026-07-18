@@ -10,16 +10,21 @@ Nice-to-haves: Python or TypeScript stack, series B+ startup or established tech
 """
 
 [ai]
-# One OpenRouter key powers everything: bulk scoring, profile extraction, and
-# prep briefs. Or set the OPEN_ROUTER_API_KEY env var instead.
-openrouter_api_key = ""
-# All three are OpenRouter model slugs (provider/model[:variant]). Examples:
-#   "anthropic/claude-haiku-4-5", "google/gemini-3.5-flash",
-#   "deepseek/deepseek-v4-pro", "qwen/qwen3-next-80b-a3b-instruct:free"
+# Each model slot is "provider:model" — mix and match freely, e.g. route bulk
+# scoring direct to a provider's free tier and deep/prep through a gateway.
+# No prefix defaults to "openrouter" (bare slugs from older configs still work).
+# Supported providers and the env var each resolves its key from (see
+# jobscout/llm.py PROVIDERS): openrouter -> OPEN_ROUTER_API_KEY, requesty ->
+# REQUESTY_API_KEY, google -> GEMINI_API_KEY, anthropic -> ANTHROPIC_API_KEY.
+# Or override any of them here instead of the environment:
+# [ai.api_keys]
+# openrouter = ""
 # bulk_model runs on every listing, so keep it cheap; deep/prep can be stronger.
-bulk_model = "anthropic/claude-haiku-4-5"
-deep_model = "anthropic/claude-sonnet-4-6"
-prep_model = "anthropic/claude-sonnet-4-6"
+# Examples: "google:gemini-3.1-flash-lite" (direct, free tier),
+#   "openrouter:anthropic/claude-haiku-4-5", "requesty:google/gemini-3.5-flash"
+bulk_model = "openrouter:anthropic/claude-haiku-4-5"
+deep_model = "openrouter:anthropic/claude-sonnet-4-6"
+prep_model = "openrouter:anthropic/claude-sonnet-4-6"
 # Which producer scores listings:
 #   "additive" (default) — the LLM judges a single 0-100 fit score.
 #   "gated"              — the LLM only extracts facts; Python decides apply/no from
@@ -32,10 +37,9 @@ prep_model = "anthropic/claude-sonnet-4-6"
 #                            # rescore). Peak in-flight requests ~= concurrency *
 #                            # (scorer_repeats // 2 + 1); keep modest vs rate limits. 1 = serial.
 fit_threshold = 70          # push to Notion when fit >= this
-# Optional OpenRouter reasoning config for the bulk model. Omit for the provider
-# default, or set effort / turn thinking off:
-# [ai.bulk_reasoning]
-# effort = "low"            # or: enabled = false
+# Optional reasoning effort for the bulk model. Omit for the provider default,
+# or set it (providers with no reasoning support ignore this):
+# bulk_reasoning_effort = "low"   # low / medium / high / max / min / none
 
 [notion]
 token = ""                  # your Notion integration token

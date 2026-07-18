@@ -33,16 +33,30 @@ To test the OpenAI arm you need `pip install openai` and OPENAI_API_KEY set; the
 from __future__ import annotations
 
 import argparse
+import os
 import statistics
 import time
 from pathlib import Path
 
+import openai
+
 from jobscout.config import Config, load_config
 from jobscout.models import Listing
 from jobscout.profile import build_profile
-from jobscout.llm import openrouter_client
 from jobscout.scoring import _build_system, _listing_text, _parse_score
 from jobscout.store import Store
+
+# jobscout/llm.py now points at Requesty; this bake-off's "openrouter arm" needs
+# OpenRouter specifically, so it keeps its own client pinned there (same pattern
+# as scorecard.py / scorecard_gated.py).
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+
+
+def openrouter_client(cfg: Config) -> openai.OpenAI:
+    key = os.environ.get("OPEN_ROUTER_API_KEY") or os.environ.get("OPENROUTER_API_KEY")
+    if not key:
+        raise RuntimeError("No OpenRouter API key — set OPEN_ROUTER_API_KEY (or OPENROUTER_API_KEY).")
+    return openai.OpenAI(base_url=OPENROUTER_BASE_URL, api_key=key)
 
 # ---------------------------------------------------------------------------
 # Price table — $ per 1M tokens (input, output). As of July 2026. Sources noted

@@ -72,10 +72,13 @@ Copy `config.example.toml` to `config.toml` (done for you by `init`) and fill it
 `config.toml` is git-ignored — it holds your keys and personal goals.
 
 - `[profile]` — `cv_path` (PDF or `.md`) and a free-text `goals` blurb.
-- `[ai]` — one `openrouter_api_key` (or `OPEN_ROUTER_API_KEY`) powers everything:
-  bulk scoring, profile extraction, and prep briefs. `bulk_model` / `deep_model` /
-  `prep_model` are OpenRouter slugs (e.g. `anthropic/claude-haiku-4-5`,
-  `google/gemini-3.5-flash`); plus `fit_threshold` (push to Notion at/above this score).
+- `[ai]` — `bulk_model` / `deep_model` / `prep_model` are each `"provider:model"`
+  (e.g. `openrouter:anthropic/claude-haiku-4-5`, `google:gemini-3.1-flash-lite`),
+  so different model slots can hit different providers/gateways — a bare slug
+  with no prefix defaults to `openrouter`. Each provider resolves its key from
+  its own env var (`OPEN_ROUTER_API_KEY`, `REQUESTY_API_KEY`, `GEMINI_API_KEY`,
+  `ANTHROPIC_API_KEY`), or override any of them under `[ai.api_keys]`; plus
+  `fit_threshold` (push to Notion at/above this score).
 - `[notion]` — integration `token` (or `NOTION_TOKEN`) and `database_id`.
 - `[scoring]` — the tunable rubric (below).
 - `[[sources]]` — the boards and feeds to scrape (see [docs/sources.md](docs/sources.md)).
@@ -142,9 +145,9 @@ cheaper model without losing quality, see
 
 ## Cost
 
-Every listing is sent to an LLM for scoring, so scans cost money. All calls route
-through OpenRouter, so pick a cheap `bulk_model` slug (e.g. `anthropic/claude-haiku-4-5`,
-`google/gemini-3.5-flash`, or a `:free` model) since it runs on every listing, and
+Every listing is sent to an LLM for scoring, so scans cost money. Pick a cheap
+`bulk_model` route (e.g. `google:gemini-3.1-flash-lite` on a free tier, or
+`openrouter:anthropic/claude-haiku-4-5`) since it runs on every listing, and
 reserve stronger `deep_model` / `prep_model` slugs for profile extraction and prep
 briefs. Use `bakeoff.py` to compare model cost and quality before you commit. Watch your
 volume when adding high-traffic sources.

@@ -30,7 +30,7 @@ from pydantic import BaseModel, Field
 from .config import Config, assessment_config_hash
 from .features import FEATURES
 from .gates import GateConfig, PriorityConfig
-from .llm import openrouter_client, with_retries
+from .llm import extra_body_for, resolve_route, with_retries
 from .models import CandidateProfile, Listing, Score
 from .scoring import _listing_text, _parse_score, content_hash
 from .store import Store
@@ -125,14 +125,14 @@ def build_extract_system(gates: list[GateConfig]) -> str:
     return "\n".join(lines)
 
 
-def extract_prompt_hash(system: str, reasoning: dict[str, Any] | None) -> str:
+def extract_prompt_hash(system: str, reasoning_effort: str | None) -> str:
     """Cache key for a Stage-1 extraction call, independent of listing/repeat.
 
-    Folds reasoning in alongside the prompt text so flipping ai.bulk_reasoning
+    Folds reasoning in alongside the prompt text so flipping ai.bulk_reasoning_effort
     (e.g. off -> low effort) invalidates cached extractions instead of serving a
     value produced under a different thinking budget.
     """
-    payload = json.dumps({"system": system, "reasoning": reasoning}, sort_keys=True)
+    payload = json.dumps({"system": system, "reasoning_effort": reasoning_effort}, sort_keys=True)
     return hashlib.sha256(payload.encode()).hexdigest()[:16]
 
 
@@ -438,9 +438,10 @@ def consensus_locked(assessments: list[Assessment], remaining: int) -> bool:
 # ---------------------------------------------------------------------------
 
 def _usage_dict(response) -> dict:
-    """Pull real OpenRouter usage off a completion response (requested via
-    usage.include). cost is OpenRouter's own charged credit total, exposed as an
-    extra field on the usage object. Everything is best-effort — a provider that
+    """Pull usage off a completion response. cost is the real charged total in USD
+    when the provider reports one (gateways like openrouter/requesty do, as an
+    extra field on usage); direct provider APIs (google, anthropic) report tokens
+    only, so cost stays null there. Everything is best-effort — a provider that
     omits usage just yields nulls, never an error."""
     usage = getattr(response, "usage", None)
     if usage is None:
@@ -467,16 +468,16 @@ class GatedScorer:
         self, cfg: Config, profile: CandidateProfile | None = None, store: Store | None = None
     ) -> None:
         self._cfg = cfg
-        self._client = openrouter_client(cfg)
+        self._route = resolve_route(cfg, cfg.ai.bulk_model)
         self._system = build_extract_system(cfg.gates)
-        self._reasoning = cfg.ai.bulk_reasoning
+        self._reasoning_effort = cfg.ai.bulk_reasoning_effort
         self._repeats = max(1, cfg.ai.scorer_repeats)
         self._version = assessment_config_hash(cfg)
         # Stage-1 cache: a listing/model/prompt/repeat already extracted skips the
         # LLM call entirely, so gate/priority-only config edits (which don't change
         # extract_prompt_hash) never re-pay for extraction on rescore.
         self._store = store
-        self._prompt_hash = extract_prompt_hash(self._system, self._reasoning)
+        self._prompt_hash = extract_prompt_hash(self._system, self._reasoning_effort)
 
     def extract(self, listing: Listing, repeat_idx: int = 0) -> Extraction:
         text_hash = content_hash(listing)
@@ -491,16 +492,14 @@ class GatedScorer:
             {"role": "system", "content": self._system},
             {"role": "user", "content": f"Extract from this listing:\n\n{_listing_text(listing)}"},
         ]
-        extra_body: dict = {"usage": {"include": True}}
-        if self._reasoning is not None:
-            extra_body["reasoning"] = self._reasoning
+        extra_body = extra_body_for(self._route.provider, self._reasoning_effort)
 
         last_exc: Exception | None = None
         raw = ""
         for attempt in range(2):
             response = with_retries(
-                lambda: self._client.chat.completions.create(
-                    model=self._cfg.ai.bulk_model,
+                lambda: self._route.client.chat.completions.create(
+                    model=self._route.model,
                     messages=messages,
                     max_tokens=4096,
                     extra_body=extra_body,

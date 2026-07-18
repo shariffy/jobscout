@@ -52,7 +52,8 @@ CREATE TABLE IF NOT EXISTS extractions (
     -- content fingerprint of the scored text; a cache hit also requires this to
     -- match so an enriched JD is re-read instead of served stale.
     text_hash         TEXT    NOT NULL DEFAULT '',
-    -- real OpenRouter usage for the call that produced this row (null on cache reuse).
+    -- real provider usage for the call that produced this row (null on cache reuse
+    -- or when the route has no cost field, e.g. a direct provider API).
     cost              REAL,
     prompt_tokens     INTEGER,
     completion_tokens INTEGER,
@@ -401,7 +402,8 @@ class Store:
         """Cache one Stage-1 extraction, keyed so a model/prompt/reasoning change
         (a different prompt_hash) naturally misses instead of serving a stale value.
         text_hash fingerprints the scored text so an enriched JD also misses. usage,
-        when given, records the real OpenRouter cost/tokens for this call.
+        when given, records the real provider cost/tokens for this call (cost is
+        null for routes with no cost field, e.g. a direct provider API).
 
         Locked because the vote's worker threads write concurrently (see connect)."""
         u = usage or {}

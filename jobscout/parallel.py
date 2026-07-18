@@ -3,7 +3,7 @@
 One helper, `map_bounded`, runs a `work(item)` callable over many items with at most
 `max_workers` in flight, and delivers each result to `on_result` **on the calling
 thread** as it completes. That split is the whole point: `work` runs on a worker
-thread and may only touch thread-safe resources (the OpenRouter client, httpx, the
+thread and may only touch thread-safe resources (the provider clients, httpx, the
 extraction cache behind Store's lock), while `on_result` runs serially on the caller's
 thread and may freely touch things that are NOT thread-safe — the sqlite Store's other
 tables, the Rich console, the Notion client.

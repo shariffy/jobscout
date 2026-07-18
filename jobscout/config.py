@@ -18,20 +18,22 @@ class ProfileConfig(BaseModel):
 
 
 class AIConfig(BaseModel):
-    # Every model call (bulk scoring, profile extraction, prep briefs) goes through
-    # OpenRouter, so a single key powers the whole app. It resolves from
-    # ai.openrouter_api_key or the OPEN_ROUTER_API_KEY / OPENROUTER_API_KEY env vars.
-    openrouter_api_key: str = Field(default="")
-    # All three are OpenRouter model slugs (provider/model[:variant]), e.g.
-    # "anthropic/claude-haiku-4-5", "google/gemini-3.5-flash",
-    # "qwen/qwen3-next-80b-a3b-instruct:free". Use a cheap one for bulk scoring
+    # Per-provider API key overrides, e.g. { openrouter = "...", google = "..." }.
+    # Optional — each provider normally resolves its key from its own env var(s)
+    # (see jobscout/llm.py PROVIDERS); set an entry here only to override that.
+    api_keys: dict[str, str] = Field(default_factory=dict)
+    # All three are "provider:model" strings, e.g. "google:gemini-3.1-flash-lite",
+    # "openrouter:anthropic/claude-sonnet-4-6". No prefix defaults to openrouter, so
+    # bare slugs from older configs keep working. Use a cheap route for bulk scoring
     # (runs on every listing) and stronger ones for deep/prep.
-    bulk_model: str = "anthropic/claude-haiku-4-5"
-    deep_model: str = "anthropic/claude-sonnet-4-6"
-    prep_model: str = "anthropic/claude-sonnet-4-6"
-    # Optional OpenRouter reasoning config for the bulk model, passed through
-    # verbatim, e.g. {"effort": "low"} or {"enabled": false}. None = provider default.
-    bulk_reasoning: dict[str, Any] | None = None
+    bulk_model: str = "google:gemini-3.1-flash-lite"
+    deep_model: str = "openrouter:anthropic/claude-sonnet-4-6"
+    prep_model: str = "openrouter:anthropic/claude-sonnet-4-6"
+    # Optional reasoning effort for the bulk model: "low"/"medium"/"high"/"max"/
+    # "min"/"none". None = provider default. Each provider folds this into its own
+    # request shape (see jobscout/llm.py); providers with no reasoning support
+    # ignore it. Ignored entirely by providers with reasoning_style=None.
+    bulk_reasoning_effort: str | None = None
     # Which producer scores listings: "additive" = single 0-100 fit judged by the
     # LLM (legacy); "gated" = LLM extracts facts, Python decides apply/no + priority
     # from [[gates]] and [priority] (fit_score becomes a derived compat number).
@@ -43,18 +45,9 @@ class AIConfig(BaseModel):
     # How many listings to score concurrently in a batch (scan / rescore). Each
     # listing's vote already fans its mandatory repeats out in parallel, so the peak
     # in-flight request count is roughly scorer_concurrency * (scorer_repeats // 2 + 1)
-    # — keep it modest so a shared OpenRouter key isn't rate-limited. 1 = serial.
+    # — keep it modest so a shared provider key isn't rate-limited. 1 = serial.
     scorer_concurrency: int = 4
     fit_threshold: int = 70
-
-    @model_validator(mode="after")
-    def resolve_api_key(self) -> AIConfig:
-        if not self.openrouter_api_key:
-            self.openrouter_api_key = (
-                os.environ.get("OPEN_ROUTER_API_KEY", "")
-                or os.environ.get("OPENROUTER_API_KEY", "")
-            )
-        return self
 
 
 class NotionConfig(BaseModel):
@@ -152,7 +145,7 @@ def assessment_config_hash(cfg: Config) -> str:
     payload = {
         "scorer": cfg.ai.scorer,
         "bulk_model": cfg.ai.bulk_model,
-        "bulk_reasoning": cfg.ai.bulk_reasoning,
+        "bulk_reasoning_effort": cfg.ai.bulk_reasoning_effort,
         "scorer_repeats": cfg.ai.scorer_repeats,
         "gates": [g.model_dump() for g in cfg.gates],
         "priority": cfg.priority.model_dump(),
