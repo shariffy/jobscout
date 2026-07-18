@@ -422,6 +422,23 @@ models removed after this result.
 Kept in the script: `--local-only` (skip the paid cloud arm), `--structured` (the
 schema-constrained mode above), and truncation reported as its own error.
 
+### 8j. Follow-up: prism-ml Ternary Bonsai (2026-07-17)
+
+Tried prism-ml's ternary (1.58-bit) Bonsai 8B/27B as a way to buy more capacity at a
+2-4B-class memory footprint. GGUF is a dead end — its Q2_0 packing needs prism-ml's own
+`llama.cpp` fork; Ollama can't load it. MLX (`mlx_lm.server`) runs stock but has no
+batched prefill for the ternary format:
+
+| model | peak memory | prefill (6.2k-token JD) | one full call | schema issues |
+|---|--:|--:|--:|--:|
+| Ternary-Bonsai-27B-mlx-2bit | 7.85 GB | ~16 tok/s, degrading | ~610s (killed before completion) | not measured |
+| Ternary-Bonsai-8B-mlx-2bit | — | ~122 tok/s | ~150s avg (2-call sample) | 5 issues / 2 calls |
+
+27B's prefill (worse than every model in §5c/§8) made it unusable regardless of output
+quality. 8B was ~7.5x faster but still 4-7x slower than the dense 2-4B models §8 already
+rejected, with a similar grounding-issue rate. **Shelved**: same as §8, but this time a
+tooling/kernel ceiling, not a capacity one.
+
 ---
 
 ## 9. Reproducing
