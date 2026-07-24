@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import ipaddress
 import re
+import socket
 import time
 from typing import Any
+from urllib.parse import urljoin, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
@@ -12,6 +15,46 @@ from ..models import Listing
 from .base import make_absolute, normalise_text
 
 _UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+_MAX_REDIRECTS = 5
+
+
+class SSRFError(ValueError):
+    """A URL (or a redirect hop) points at a host we refuse to fetch."""
+
+
+def _is_disallowed_ip(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    return (
+        addr.is_private
+        or addr.is_loopback
+        or addr.is_link_local
+        or addr.is_reserved
+        or addr.is_multicast
+        or addr.is_unspecified
+    )
+
+
+def _assert_safe_url(url: str) -> None:
+    """Reject non-http(s) schemes and hosts that resolve to a loopback, private,
+    link-local, or otherwise reserved address (e.g. 169.254.169.254 cloud metadata,
+    127.0.0.1). Listing-controlled URLs and redirect targets are attacker input —
+    a hostile board could point either at an internal address, so every hop is
+    checked, not just the URL a source config names."""
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise SSRFError(f"Refusing to fetch non-http(s) URL: {url!r}")
+    host = parsed.hostname
+    if not host:
+        raise SSRFError(f"URL has no host: {url!r}")
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except OSError as exc:
+        raise SSRFError(f"Could not resolve host {host!r}: {exc}") from exc
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if _is_disallowed_ip(ip):
+            raise SSRFError(
+                f"Refusing to fetch {url!r}: host {host!r} resolves to disallowed address {ip}"
+            )
 
 
 class HttpSource:
@@ -35,10 +78,19 @@ class HttpSource:
         return listings
 
     def _get(self, url: str) -> str:
-        with httpx.Client(follow_redirects=True, timeout=30) as client:
-            resp = client.get(url, headers={"User-Agent": _UA})
-            resp.raise_for_status()
-            return resp.text
+        # Redirects are followed manually (not via httpx's follow_redirects) so every
+        # hop — not just the initial URL — gets the SSRF host check; a hostile board
+        # could otherwise redirect a listing/detail URL at an internal address.
+        with httpx.Client(follow_redirects=False, timeout=30) as client:
+            for _ in range(_MAX_REDIRECTS + 1):
+                _assert_safe_url(url)
+                resp = client.get(url, headers={"User-Agent": _UA})
+                if resp.is_redirect and resp.headers.get("location"):
+                    url = urljoin(url, resp.headers["location"])
+                    continue
+                resp.raise_for_status()
+                return resp.text
+        raise SSRFError(f"Too many redirects (> {_MAX_REDIRECTS}) fetching {url!r}")
 
     def _enrich(self, listing: Listing) -> Listing:
         """Fetch the individual job page and extract a richer description."""
