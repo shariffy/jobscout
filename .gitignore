@@ -19,4 +19,6 @@ cv.md
 playwright-browser/
 .sweep_cache.jsonl
 .cursor/
+.claude/
+graphify-out/
 bakeoff_reports/
