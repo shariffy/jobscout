@@ -37,8 +37,13 @@ class Provider:
     # Extra request fields always sent to this provider (e.g. asking a gateway to
     # include real charged cost in the response's usage object).
     base_extra_body: dict = field(default_factory=dict)
-    # Server-side web-search tool definition, or None if the provider has none.
-    web_search_tool: dict | None = None
+    # Extra_body fields that turn on server-side web search, merged wholesale into
+    # the call's extra_body when a caller wants grounding; None if the provider
+    # doesn't offer it. Shape varies per provider — OpenRouter/Requesty hang a tool
+    # off the standard `tools` array, Google nests its own under a `google` key
+    # (its grounding tool isn't part of the OpenAI-compatible tool-calling surface),
+    # so this can't be a single normalized "tool" value.
+    web_search_extra_body: dict | None = None
 
 
 PROVIDERS: dict[str, Provider] = {
@@ -47,18 +52,26 @@ PROVIDERS: dict[str, Provider] = {
         key_envs=("OPEN_ROUTER_API_KEY", "OPENROUTER_API_KEY"),
         reasoning_style="openrouter-dict",
         base_extra_body={"usage": {"include": True}},
-        web_search_tool={"type": "openrouter:web_search"},
+        web_search_extra_body={"tools": [{"type": "openrouter:web_search"}]},
     ),
     "requesty": Provider(
         base_url="https://router.requesty.ai/v1",
         key_envs=("REQUESTY_API_KEY",),
         reasoning_style="reasoning_effort",
-        web_search_tool={"type": "web_search_preview"},
+        web_search_extra_body={"tools": [{"type": "web_search_preview"}]},
     ),
     "google": Provider(
         base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
         key_envs=("GEMINI_API_KEY", "GOOGLE_API_KEY"),
         reasoning_style="reasoning_effort",
+        # No web_search_extra_body: Grounding with Google Search is NOT available
+        # through Gemini's OpenAI-compatibility endpoint — confirmed by a Google
+        # staff reply on the Gemini API forum ("Grounding with Google search is
+        # not available when using OpenAI compatibility mode"), and independently
+        # reproduced here as a live 400 on every extra_body shape tried. Getting
+        # grounding on Gemini needs the native Gemini SDK — a different,
+        # non-OpenAI-compatible client this registry doesn't support. Don't
+        # re-attempt this via extra_body; it isn't a syntax problem.
     ),
     "anthropic": Provider(
         base_url="https://api.anthropic.com/v1/",

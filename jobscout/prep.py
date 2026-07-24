@@ -67,12 +67,14 @@ def generate_prep(
 
     # Server-side web search (when the provider offers one): the model decides
     # when to search, the provider runs it, and the grounded answer comes back in
-    # message.content. Passed via extra_body so the tool type isn't touched by the
-    # OpenAI SDK's function-tool validation. Direct provider APIs (google,
-    # anthropic) have no such tool here — the brief runs ungrounded on those.
+    # message.content. Passed via extra_body so it isn't touched by the OpenAI
+    # SDK's function-tool validation — each provider's shape differs (OpenRouter/
+    # Requesty hang a tool off `tools[]`; Google nests its own grounding config
+    # under a `google` key), so the provider entry owns its whole extra_body slice.
+    # Anthropic direct has no such tool here — the brief runs ungrounded on that route.
     extra_body = extra_body_for(route.provider, None)
-    if route.provider.web_search_tool is not None:
-        extra_body["tools"] = [route.provider.web_search_tool]
+    if route.provider.web_search_extra_body is not None:
+        extra_body.update(route.provider.web_search_extra_body)
     else:
         print(
             f"[prep] {route.provider_name} has no server-side web search — "
