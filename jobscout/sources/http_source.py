@@ -7,7 +7,7 @@ from typing import Any
 import httpx
 from bs4 import BeautifulSoup
 
-from ..config import SourceConfig
+from ..config import SelectorConfig, SourceConfig
 from ..models import Listing
 from .base import make_absolute, normalise_text
 
@@ -23,7 +23,7 @@ class HttpSource:
 
     def fetch(self) -> list[Listing]:
         listings: list[Listing] = []
-        for i, url in enumerate(self._page_urls()):
+        for i, url in enumerate(page_urls(self._cfg)):
             if i:
                 time.sleep(0.5)  # be polite when paginating
             page = self._parse(self._get(url), url)
@@ -33,16 +33,6 @@ class HttpSource:
         if self._cfg.selectors.fetch_detail:
             listings = [self._enrich(l) for l in listings]
         return listings
-
-    def _page_urls(self):
-        cfg = self._cfg
-        if cfg.pages <= 1 or not cfg.page_param:
-            yield cfg.url
-            return
-        m = re.search(rf"[?&]{re.escape(cfg.page_param)}=([0-9]+)", cfg.url)
-        base = int(m.group(1)) if m else 0
-        for i in range(cfg.pages):
-            yield _set_query_param(cfg.url, cfg.page_param, base + i * cfg.page_size)
 
     def _get(self, url: str) -> str:
         with httpx.Client(follow_redirects=True, timeout=30) as client:
@@ -63,39 +53,65 @@ class HttpSource:
         return listing
 
     def _parse(self, html: str, base_url: str) -> list[Listing]:
-        soup = BeautifulSoup(html, "html.parser")
-        sel = self._cfg.selectors
-        listings: list[Listing] = []
-
-        containers = soup.select(sel.container) if sel.container else [soup]
-        for el in containers:
-            title = _text(el, sel.title)
-            company = _text(el, sel.company)
-            location = _text(el, sel.location)
-            description = _text(el, sel.description)
-            url = _attr(el, sel.url, "href")
-            url = make_absolute(url, base_url)
-
-            if not title or not url:
-                continue
-
-            listings.append(
-                Listing(
-                    source_name=self.name,
-                    title=title,
-                    company=company or self.name,
-                    location=location,
-                    url=url,
-                    description=description,
-                    raw={"html_snippet": str(el)[:2000]},
-                )
-            )
-
-        return listings
+        return parse_listings(html, base_url, self._cfg.selectors, self.name)
 
     def parse_html(self, html: str, base_url: str = "") -> list[Listing]:
         """Exposed for testing — parse arbitrary HTML without network."""
         return self._parse(html, base_url or self._cfg.url)
+
+
+def page_urls(cfg: SourceConfig):
+    """Yield the sequence of page URLs to fetch for a paginated source.
+
+    Shared by HttpSource and BrowserSource. Advances `page_param` by `page_size`
+    each time, starting from its current value in `cfg.url`.
+    """
+    if cfg.pages <= 1 or not cfg.page_param:
+        yield cfg.url
+        return
+    m = re.search(rf"[?&]{re.escape(cfg.page_param)}=([0-9]+)", cfg.url)
+    base = int(m.group(1)) if m else 0
+    for i in range(cfg.pages):
+        yield _set_query_param(cfg.url, cfg.page_param, base + i * cfg.page_size)
+
+
+def parse_listings(
+    html: str, base_url: str, sel: SelectorConfig, source_name: str
+) -> list[Listing]:
+    """Parse listing cards out of a page's HTML using config-driven selectors.
+
+    Shared by HttpSource and BrowserSource so both scrape with the same field
+    extraction rules — the only difference between them is how the HTML was
+    obtained (plain GET vs. a rendered browser page).
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    listings: list[Listing] = []
+
+    containers = soup.select(sel.container) if sel.container else [soup]
+    for el in containers:
+        title = _text(el, sel.title)
+        company = _text(el, sel.company)
+        location = _text(el, sel.location)
+        description = _text(el, sel.description)
+        url = _attr(el, sel.url, "href")
+        url = make_absolute(url, base_url)
+
+        if not title or not url:
+            continue
+
+        listings.append(
+            Listing(
+                source_name=source_name,
+                title=title,
+                company=company or source_name,
+                location=location,
+                url=url,
+                description=description,
+                raw={"html_snippet": str(el)[:2000]},
+            )
+        )
+
+    return listings
 
 
 def _set_query_param(url: str, param: str, value: int) -> str:

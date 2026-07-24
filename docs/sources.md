@@ -181,6 +181,15 @@ export EXAMPLE_PASSWORD=…
 jobscout scan
 ```
 
+**Login is a heuristic, not a generic login flow.** There's no config field for the
+login form's own selectors, so when `login_url` is set the browser source navigates
+there and: fills the first visible `input[type=email]` or `input[type=text]` with
+`username_env`'s value, fills the first `input[type=password]` with `password_env`'s
+value, then submits (clicks `button[type=submit]` if present, otherwise presses Enter).
+This only works for plain, single-page username+password forms. It does **not** handle
+SSO redirects, multi-step logins, CAPTCHAs, or 2FA — boards that need those aren't
+supported by this heuristic; you'd need a source-specific login routine instead.
+
 Keep credentials in environment variables (or a secrets manager) — never commit them.
 Only scrape boards whose terms permit it, and be respectful of rate limits.
 
