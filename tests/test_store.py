@@ -1,8 +1,11 @@
 """Store dedup and round-trip tests (no AI, no network)."""
+import os
+import stat
+
 import pytest
 
 from jobscout.models import Application, Listing, Score
-from jobscout.store import Store
+from jobscout.store import Store, _chmod_owner_only
 
 
 @pytest.fixture
@@ -326,3 +329,26 @@ def test_extraction_cascade_deletes_with_listing(store):
         "SELECT COUNT(*) c FROM extractions WHERE listing_id = ?", (listing.id,)
     ).fetchone()
     assert row["c"] == 0
+
+
+# --- file permissions (0600) ---
+
+
+@pytest.mark.skipif(os.name != "posix", reason="chmod perms are posix-only")
+def test_new_db_is_created_owner_only(tmp_path):
+    db = tmp_path / "perms.db"
+    with Store(db):
+        pass
+    mode = stat.S_IMODE(db.stat().st_mode)
+    assert mode == 0o600
+
+
+@pytest.mark.skipif(os.name != "posix", reason="chmod perms are posix-only")
+def test_chmod_owner_only_restricts_existing_file(tmp_path):
+    f = tmp_path / "secret.txt"
+    f.write_text("shh")
+    f.chmod(0o644)
+
+    _chmod_owner_only(f)
+
+    assert stat.S_IMODE(f.stat().st_mode) == 0o600

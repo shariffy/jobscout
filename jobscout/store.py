@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import threading
 from contextlib import contextmanager
@@ -9,6 +10,21 @@ from pathlib import Path
 from typing import Generator
 
 from .models import Application, Listing, Score
+
+
+def _chmod_owner_only(path: str | Path) -> None:
+    """Restrict a freshly created local state file to owner read/write only.
+
+    Other local users can otherwise read tokens, CV-derived data, and job
+    history straight off disk. No-op (best-effort) on non-posix platforms,
+    where chmod doesn't carry the same meaning for group/other bits.
+    """
+    if os.name != "posix":
+        return
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS listings (
@@ -93,6 +109,7 @@ class Store:
         self._extraction_lock = threading.Lock()
 
     def connect(self) -> None:
+        is_new = not Path(self._path).exists()
         # check_same_thread=False lets the vote's worker threads reach the cache;
         # concurrent access is confined to the two extraction methods and
         # serialised by _extraction_lock.
@@ -104,6 +121,12 @@ class Store:
         self._conn.commit()
         self._migrate()
         self._conn.commit()
+        if is_new:
+            _chmod_owner_only(self._path)
+            for suffix in ("-wal", "-shm"):
+                sidecar = f"{self._path}{suffix}"
+                if Path(sidecar).exists():
+                    _chmod_owner_only(sidecar)
 
     def _migrate(self) -> None:
         """Add assessment columns to a pre-gated scores table, then backfill.

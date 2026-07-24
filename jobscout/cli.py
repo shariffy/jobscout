@@ -11,7 +11,7 @@ from rich.console import Console
 from rich.table import Table
 
 from .config import load_config
-from .store import Store
+from .store import Store, _chmod_owner_only
 
 app = typer.Typer(name="jobscout", help="Personal job-board analyser and tracker.")
 console = Console()
@@ -72,6 +72,7 @@ def init(
         example = Path(__file__).parent.parent / "config.example.toml"
         if example.exists():
             shutil.copy(example, config_path)
+            _chmod_owner_only(config_path)
             console.print(f"[green]Created[/] {config_path} from example — fill in your values.")
         else:
             console.print(f"[yellow]config.example.toml not found[/]; create {config_path} manually.")

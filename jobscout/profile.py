@@ -8,6 +8,7 @@ from pypdf import PdfReader
 from .config import Config
 from .llm import resolve_route, with_retries
 from .models import CandidateProfile
+from .store import _chmod_owner_only
 
 _CACHE_FILENAME = "candidate_profile.json"
 
@@ -93,4 +94,5 @@ def build_profile(cfg: Config, force: bool = False) -> CandidateProfile:
 
     profile = CandidateProfile(**data)
     cache_path.write_text(json.dumps(data, indent=2))
+    _chmod_owner_only(cache_path)
     return profile

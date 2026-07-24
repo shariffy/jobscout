@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
+import sys
 import tomllib
 from pathlib import Path
 from typing import Any, Literal
@@ -170,4 +172,37 @@ def load_config(path: str | Path | None = None) -> Config:
     with open(path, "rb") as f:
         raw = tomllib.load(f)
 
+    _warn_if_insecure(Path(path), raw)
+
     return Config.model_validate(raw)
+
+
+def _warn_if_insecure(path: Path, raw: dict) -> None:
+    """Best-effort nudge toward env vars: warn (don't fail) if config.toml is
+    readable by other local users, or carries an inline secret that env vars
+    would keep off disk."""
+    if os.name == "posix":
+        try:
+            mode = path.stat().st_mode
+        except OSError:
+            mode = 0
+        if mode & (stat.S_IRWXG | stat.S_IRWXO):
+            print(
+                f"[jobscout] warning: {path} is readable by group/other — "
+                f"run `chmod 600 {path}` or keep secrets in env vars instead.",
+                file=sys.stderr,
+            )
+    ai = raw.get("ai") or {}
+    if isinstance(ai, dict) and any((ai.get("api_keys") or {}).values()):
+        print(
+            f"[jobscout] warning: {path} has an inline [ai.api_keys] secret — "
+            "prefer the provider's env var (see jobscout/llm.py PROVIDERS) instead.",
+            file=sys.stderr,
+        )
+    notion = raw.get("notion") or {}
+    if isinstance(notion, dict) and notion.get("token"):
+        print(
+            f"[jobscout] warning: {path} has an inline notion.token — "
+            "prefer the NOTION_TOKEN env var instead.",
+            file=sys.stderr,
+        )
