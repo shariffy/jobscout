@@ -18,3 +18,4 @@ cv.pdf
 cv.md
 playwright-browser/
 .sweep_cache.jsonl
+.cursor/
