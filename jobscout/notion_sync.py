@@ -26,8 +26,6 @@ _DB_PROPERTIES = {
     "Role": {"title": {}},
     "Company": {"rich_text": {}},
     "URL": {"url": {}},
-    "Fit": {"number": {"format": "number"}},
-    # Gated assessment (dual-written with Fit during the migration window).
     "Decision": {
         "select": {
             "options": [
@@ -90,11 +88,9 @@ def _rt(text: str, limit: int = 2000) -> list[dict]:
 
 
 def _callout_text(score: Score) -> str:
-    if score.tier_label or score.gate_results:  # gated assessment
-        head = "APPLY" if score.decision == "apply" else "NO"
-        tier = f" {score.tier_label}" if score.tier_label not in ("", "none") else ""
-        return f"{head}{tier} (fit {score.fit_score}) — {score.rationale}"
-    return f"Fit {score.fit_score}/100 — {score.rationale}"
+    head = "APPLY" if score.decision == "apply" else "NO"
+    tier = f" {score.tier_label}" if score.tier_label not in ("", "none") else ""
+    return f"{head}{tier} — {score.rationale}"
 
 
 class NotionSync:
@@ -142,7 +138,7 @@ class NotionSync:
         try:
             data = self._get(f"/databases/{self.database_id}")
             props = data.get("properties") or {}
-            return "Role" in props and "Fit" in props
+            return "Role" in props and "Decision" in props
         except Exception:
             return False
 
@@ -150,9 +146,8 @@ class NotionSync:
 
     @staticmethod
     def score_props(score: Score) -> dict[str, Any]:
-        """Score-derived page properties: Fit always (compat), plus
-        Decision/Priority/Tier when the score carries a gated assessment."""
-        props: dict[str, Any] = {"Fit": {"number": score.fit_score}}
+        """Score-derived page properties: Decision / Priority / Tier / Flags."""
+        props: dict[str, Any] = {}
         if score.decision:
             props["Decision"] = {"select": {"name": "Apply" if score.decision == "apply" else "No"}}
         if score.priority is not None:

@@ -22,11 +22,11 @@ from jobscout.assess import (
     evaluate_gate,
     parse_extraction,
 )
-from jobscout.config import AIConfig, Config
+from jobscout.config import Config
 from jobscout.gates import GateConfig
 from jobscout.llm import _client_cache
-from jobscout.models import Listing
-from jobscout.scoring import BulkScorer, content_hash
+from jobscout.models import CandidateProfile, Listing
+from jobscout.scoring import content_hash
 
 # --- fixtures ---------------------------------------------------------------
 
@@ -52,7 +52,7 @@ TIERS = [
 def make_cfg(**overrides) -> Config:
     _client_cache.clear()  # each test gets a fresh mocked client per provider
     data = {
-        "ai": {"api_keys": {"openrouter": "test-key"}, "bulk_model": "test/model", "scorer": "gated"},
+        "ai": {"api_keys": {"openrouter": "test-key"}, "bulk_model": "test/model"},
         "gates": GATES,
         "priority": {"tiers": TIERS, "unknown_penalty": 2},
     }
@@ -326,7 +326,8 @@ def test_all_pass_is_apply():
     assert a.decision == "apply"
     assert a.tier_label == "T1"
     assert a.priority == 0
-    assert a.fit_score == 100
+    assert a.decision == "apply"
+    assert a.priority == 0
     assert a.flags == []
 
 
@@ -337,7 +338,8 @@ def test_any_hard_fail_is_no():
     assert a.decision == "no"
     assert a.priority is None
     assert "gate-fail-office" in a.flags
-    assert a.fit_score <= 15  # confirmed dealbreaker band
+    assert a.decision == "no"
+    assert a.priority is None
 
 
 def test_hard_fail_is_non_compensatory():
@@ -354,7 +356,8 @@ def test_unknown_with_pass_policy_applies_silently():
     a = assess(make_cfg(), make_listing(), e)
     assert a.decision == "apply"
     assert "gate-unknown-salary_floor" not in a.flags
-    assert a.fit_score == 98  # one unknown * penalty 2
+    assert a.decision == "apply"
+    assert a.priority == 2  # one unknown * penalty 2
 
 
 def test_unknown_with_pass_flag_policy_flags():
@@ -373,7 +376,8 @@ def test_unknown_with_fail_policy_rejects_softly():
     a = assess(cfg, make_listing(), e)
     assert a.decision == "no"
     assert "gate-fail-salary_floor" in a.flags
-    assert 30 <= a.fit_score <= 69  # soft reject band, not the dealbreaker band
+    assert a.decision == "no"
+    assert a.priority is None  # soft reject via on_unknown=fail
 
 
 def test_unknown_penalty_demotes_within_tier():
@@ -423,19 +427,19 @@ def test_no_match_is_none_tier():
     assert a.decision == "apply"
     assert a.tier_label == "none"
     assert a.priority == 400  # behind every named tier
-    assert a.fit_score >= 70  # apply always stays shortlist-visible
+    assert a.decision == "apply"
 
 
-def test_tier_ordering_maps_to_fit_bands():
+def test_tier_ordering_maps_to_priority():
     cfg = make_cfg()
-    fits = []
+    pris = []
     titles = ["VP of Engineering", "Founding Engineer", "Engineering Manager", "Staff Engineer"]
     for title in titles:
         e = clean_extraction()
         del e.features["role_substance"]
-        fits.append(assess(cfg, make_listing(title=title), e).fit_score)
-    assert fits == sorted(fits, reverse=True)
-    assert all(f >= 70 for f in fits)
+        pris.append(assess(cfg, make_listing(title=title), e).priority)
+    assert pris == sorted(pris)  # lower priority = better tier
+    assert all(p is not None for p in pris)
 
 
 # --- extraction plumbing ------------------------------------------------------
@@ -499,15 +503,15 @@ def test_gated_scorer_score(mock_openai_cls):
     assert score.decision == "apply"
     assert score.tier_label == "T1"
     assert score.priority is not None
-    assert score.fit_score >= 70  # derived compat: apply <=> fit >= 70
+    assert score.decision == "apply"
     assert score.tier == "bulk"
     assert len(score.gate_results) == 5
     # no_blocked_stack passed; office unknown flagged but on_unknown=pass_flag
-    assert score.fit_score == 100
+    assert score.priority == 0
 
 
 @patch("jobscout.llm.openai.OpenAI")
-def test_gated_scorer_rejects_below_70(mock_openai_cls):
+def test_gated_scorer_rejects(mock_openai_cls):
     client = MagicMock()
     mock_openai_cls.return_value = client
     client.chat.completions.create.return_value = mock_extract_response({
@@ -518,71 +522,63 @@ def test_gated_scorer_rejects_below_70(mock_openai_cls):
 
     score = GatedScorer(make_cfg()).score(make_listing())
     assert score.decision == "no"
-    assert score.fit_score < 70
+    assert score.decision == "no"
 
 
 # --- producer selection ---------------------------------------------------------
 
 @patch("jobscout.llm.openai.OpenAI")
-def test_build_scorer_selects_by_config(mock_openai_cls):
-    mock_openai_cls.return_value = MagicMock()
-    profile = MagicMock()
-    profile.summary, profile.skills, profile.seniority = "s", [], ""
-    profile.domains, profile.must_haves, profile.nice_to_haves = [], [], []
-    profile.dealbreakers, profile.raw_goals = [], ""
-
+def test_build_scorer_returns_gated(mock_openai_cls):
+    profile = CandidateProfile(
+        summary="x", skills=[], seniority="", domains=[],
+        must_haves=[], nice_to_haves=[], dealbreakers=[],
+    )
     assert isinstance(build_scorer(make_cfg(), profile), GatedScorer)
 
-    additive = make_cfg()
-    additive.ai = AIConfig(api_keys={"openrouter": "k"}, bulk_model="test/model", scorer="additive")
-    assert isinstance(build_scorer(additive, profile), BulkScorer)
 
 
-# --- consensus / self-consistency ------------------------------------------------
-
-def _a(decision, tier_label="none", fit_score=70, priority=None) -> Assessment:
-    return Assessment(decision=decision, tier_label=tier_label, fit_score=fit_score,
-                      priority=priority, rationale="r", flags=[], gate_results=[])
+def _a(decision, tier_label="none", priority=None) -> Assessment:
+    return Assessment(
+        decision=decision, tier_label=tier_label, priority=priority,
+        rationale="r", flags=[], gate_results=[],
+    )
 
 
 def test_consensus_single_returns_itself():
-    a = _a("apply", "T1", 95, 0)
+    a = _a("apply", "T1", 0)
     assert consensus_assessment([a]) is a
 
 
 def test_consensus_majority_apply_wins():
     # apply / no / apply -> apply (the flip case that self-consistency resolves)
-    out = consensus_assessment([_a("apply", "T2", 90, 100), _a("no", "none", 15),
-                                _a("apply", "T2", 90, 100)])
+    out = consensus_assessment([_a("apply", "T2", 100), _a("no"),
+                                _a("apply", "T2", 100)])
     assert out.decision == "apply"
     assert out.tier_label == "T2"
 
 
 def test_consensus_majority_no_wins():
-    out = consensus_assessment([_a("no", "none", 15), _a("no", "none", 15),
-                                _a("apply", "T4", 70, 300)])
+    out = consensus_assessment([_a("no"), _a("no"), _a("apply", "T4", 300)])
     assert out.decision == "no"
 
 
 def test_consensus_representative_from_winning_side_only():
-    # the lone "no" must not supply tier/fit when "apply" wins
-    out = consensus_assessment([_a("apply", "T1", 92, 8), _a("apply", "T1", 92, 8),
-                                _a("no", "none", 5)])
+    # the lone "no" must not supply tier/priority when "apply" wins
+    out = consensus_assessment([_a("apply", "T1", 8), _a("apply", "T1", 8), _a("no")])
     assert out.decision == "apply"
     assert out.tier_label == "T1"
-    assert out.fit_score == 92
+    assert out.priority == 8
 
 
 def test_consensus_split_is_flagged():
-    out = consensus_assessment([_a("apply", "T2", 90, 100), _a("apply", "T2", 90, 100),
-                                _a("no", "none", 15)])
+    out = consensus_assessment([_a("apply", "T2", 100), _a("apply", "T2", 100), _a("no")])
     assert any(f.startswith("consensus-split-2of3") for f in out.flags)
     assert out.rationale.startswith("[consensus 2/3]")
 
 
 def test_consensus_unanimous_not_flagged():
-    out = consensus_assessment([_a("apply", "T1", 95, 0), _a("apply", "T1", 95, 0),
-                                _a("apply", "T1", 95, 0)])
+    out = consensus_assessment([_a("apply", "T1", 0), _a("apply", "T1", 0),
+                                _a("apply", "T1", 0)])
     assert not any("consensus-split" in f for f in out.flags)
     assert not out.rationale.startswith("[consensus")
 

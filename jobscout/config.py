@@ -36,20 +36,15 @@ class AIConfig(BaseModel):
     # request shape (see jobscout/llm.py); providers with no reasoning support
     # ignore it. Ignored entirely by providers with reasoning_style=None.
     bulk_reasoning_effort: str | None = None
-    # Which producer scores listings: "additive" = single 0-100 fit judged by the
-    # LLM (legacy); "gated" = LLM extracts facts, Python decides apply/no + priority
-    # from [[gates]] and [priority] (fit_score becomes a derived compat number).
-    scorer: Literal["additive", "gated"] = "additive"
-    # Self-consistency for the gated scorer: extract this many times per listing and
-    # take the majority decision. >1 trades cost/latency for decision stability — the
-    # lever that lets a cheaper, less-deterministic bulk_model match a stronger one.
+    # Self-consistency: extract this many times per listing and take the majority
+    # decision. >1 trades cost/latency for decision stability — the lever that lets
+    # a cheaper, less-deterministic bulk_model match a stronger one.
     scorer_repeats: int = 1
     # How many listings to score concurrently in a batch (scan / rescore). Each
     # listing's vote already fans its mandatory repeats out in parallel, so the peak
     # in-flight request count is roughly scorer_concurrency * (scorer_repeats // 2 + 1)
     # — keep it modest so a shared provider key isn't rate-limited. 1 = serial.
     scorer_concurrency: int = 4
-    fit_threshold: int = 70
 
 
 class NotionConfig(BaseModel):
@@ -61,37 +56,6 @@ class NotionConfig(BaseModel):
         if not self.token:
             self.token = os.environ.get("NOTION_TOKEN", "")
         return self
-
-
-class ScoringWeights(BaseModel):
-    """Maximum magnitude (points) each dimension can contribute to the score.
-
-    Positive dimensions add up to this many points; negative dimensions
-    (domain, salary, office, dealbreakers) subtract up to this many.
-    """
-
-    title: int = 20
-    scope: int = 20
-    company: int = 15
-    stack: int = 10  # how well required skills/tools match the candidate
-    domain: int = 10
-    salary: int = 3
-    office: int = 3
-    dealbreakers: int = 50
-
-
-class ScoringConfig(BaseModel):
-    # Salary: leave floor unset to ignore salary entirely. currency is a symbol
-    # or code used only for the prompt wording, e.g. "£", "$", "USD".
-    salary_floor: int | None = None
-    salary_currency: str = ""
-    # Office: max days/week the candidate will work in-office. Unset = ignore
-    # location/remote policy.
-    max_office_days: int | None = None
-    # Cap the score when the domain needs specialist expertise the candidate
-    # lacks. 100 = no ceiling (the default; scoring is otherwise unconstrained).
-    specialist_domain_ceiling: int = 100
-    weights: ScoringWeights = Field(default_factory=ScoringWeights)
 
 
 class StoreConfig(BaseModel):
@@ -132,7 +96,6 @@ class Config(BaseModel):
     ai: AIConfig = Field(default_factory=AIConfig)
     notion: NotionConfig = Field(default_factory=NotionConfig)
     store: StoreConfig = Field(default_factory=StoreConfig)
-    scoring: ScoringConfig = Field(default_factory=ScoringConfig)
     gates: list[GateConfig] = Field(default_factory=list)
     priority: PriorityConfig = Field(default_factory=PriorityConfig)
     sources: list[SourceConfig] = Field(default_factory=list)
@@ -145,7 +108,6 @@ def assessment_config_hash(cfg: Config) -> str:
     listings already scored under the current config instead of re-paying for them.
     """
     payload = {
-        "scorer": cfg.ai.scorer,
         "bulk_model": cfg.ai.bulk_model,
         "bulk_reasoning_effort": cfg.ai.bulk_reasoning_effort,
         "scorer_repeats": cfg.ai.scorer_repeats,

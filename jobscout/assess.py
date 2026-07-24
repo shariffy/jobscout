@@ -12,9 +12,7 @@ Only a high-confidence detection can hard-fail a gate; anything uncertain is
 Stage 3 (pure Python): for the apply set, assign a priority tier from the title
 and the extracted role substance (substance beats title), then rank
 bucketed-lexicographically: tier is the primary key, per-unknown-gate penalties
-break ties within it. A derived fit_score is emitted only as migration glue —
-apply lands in 70-100 by tier, no lands below 70 by severity — so the existing
-fit >= 70 shortlist plumbing keeps working until it is dropped.
+break ties within it.
 """
 from __future__ import annotations
 
@@ -37,8 +35,6 @@ from .store import Store
 
 # role_substance below this confidence cannot move a listing between tiers.
 SUBSTANCE_MIN_CONFIDENCE = 0.7
-
-_APPLY_FLOOR = 70  # fit >= 70 must stay equivalent to decision == "apply"
 
 
 class FeatureValue(BaseModel):
@@ -73,7 +69,6 @@ class Assessment(BaseModel):
     decision: str  # apply | no
     priority: int | None = None
     tier_label: str = "none"
-    fit_score: int = 0
     rationale: str = ""
     flags: list[str] = Field(default_factory=list)
     gate_results: list[GateResult] = Field(default_factory=list)
@@ -308,17 +303,8 @@ def assign_tier(
     return priority_cfg.tiers[best].name, best
 
 
-def _fit_band(tier_idx: int | None) -> tuple[int, int]:
-    """(floor, top) of the derived apply-band fit for a tier index; the top tier
-    reaches 100 and each tier steps down, never below the apply floor."""
-    if tier_idx is None:
-        return _APPLY_FLOOR, _APPLY_FLOOR + 2
-    top = max(_APPLY_FLOOR + 2, 100 - 8 * tier_idx)
-    return max(_APPLY_FLOOR, top - 8), top
-
-
 def assess(cfg: Config, listing: Listing, extraction: Extraction) -> Assessment:
-    """Stages 2 + 3: turn one extraction into a decision + priority (+ derived fit)."""
+    """Stages 2 + 3: turn one extraction into a decision + priority."""
     _apply_match_keywords(cfg.gates, listing, extraction)
     results = evaluate_gates(cfg.gates, extraction)
     by_name = {g.name: g for g in cfg.gates}
@@ -340,16 +326,10 @@ def assess(cfg: Config, listing: Listing, extraction: Extraction) -> Assessment:
     ]
 
     if confirmed or policy_fails:
-        # Reject band: confirmed dealbreakers sit at the bottom; rejections that
-        # exist only because unknowns default to fail land in the soft band.
-        if confirmed:
-            fit = max(5, 15 - 5 * (len(confirmed) - 1))
-        else:
-            fit = max(30, 69 - 10 * len(policy_fails))
         failed_bits = "; ".join(f"{r.name} ({r.reason})" for r in confirmed + policy_fails)
         rationale = f"{extraction.summary} NO — failed gates: {failed_bits}."
         return Assessment(
-            decision="no", priority=None, tier_label="none", fit_score=fit,
+            decision="no", priority=None, tier_label="none",
             rationale=rationale.strip(), flags=flags, gate_results=results,
         )
 
@@ -360,15 +340,12 @@ def assess(cfg: Config, listing: Listing, extraction: Extraction) -> Assessment:
     bucket = tier_idx if tier_idx is not None else len(cfg.priority.tiers)
     priority = bucket * 100 + penalty
 
-    floor, top = _fit_band(tier_idx)
-    fit = max(floor, top - penalty)
-
     bits = [f"APPLY {tier_label}" if tier_label != "none" else "APPLY (no tier match)"]
     if unknowns:
         bits.append("unknown: " + ", ".join(r.name for r in unknowns))
     rationale = f"{extraction.summary} {' — '.join(bits)}."
     return Assessment(
-        decision="apply", priority=priority, tier_label=tier_label, fit_score=fit,
+        decision="apply", priority=priority, tier_label=tier_label,
         rationale=rationale.strip(), flags=flags, gate_results=results,
     )
 
@@ -377,8 +354,8 @@ def consensus_assessment(assessments: list[Assessment]) -> Assessment:
     """Self-consistency vote over repeated assessments of one listing.
 
     Returns the majority decision; among the runs that agree with it, picks a stable
-    representative (the modal tier, then the median fit) so priority/tier/fit come from
-    a run that actually reached the winning decision. This turns a cheaper, less
+    representative (the modal tier, then the median priority) so priority/tier come
+    from a run that actually reached the winning decision. This turns a cheaper, less
     deterministic extractor into a stable decider — a per-listing flip needs the
     minority to become the majority, which K independent draws make far rarer.
     """
@@ -391,7 +368,7 @@ def consensus_assessment(assessments: list[Assessment]) -> Assessment:
     winners = [a for a in assessments if a.decision == majority]
     modal_tier = Counter(a.tier_label for a in winners).most_common(1)[0][0]
     cands = [a for a in winners if a.tier_label == modal_tier] or winners
-    cands = sorted(cands, key=lambda a: a.fit_score)
+    cands = sorted(cands, key=lambda a: a.priority if a.priority is not None else 10**9)
     rep = cands[len(cands) // 2]
     n, k = len(winners), len(assessments)
     if n < k:  # note the split so a shaky verdict is visible downstream
@@ -461,8 +438,8 @@ class GatedScorer:
     """Drop-in Score producer: one extraction call, then pure-Python policy.
 
     The candidate profile is not consulted — every user-specific rule lives in
-    config ([[gates]] / [priority]); it is accepted only for BulkScorer signature
-    parity."""
+    config ([[gates]] / [priority]). profile is accepted for call-site symmetry
+    with older Score producers."""
 
     def __init__(
         self, cfg: Config, profile: CandidateProfile | None = None, store: Store | None = None
@@ -577,7 +554,6 @@ class GatedScorer:
         a = consensus_assessment(assessments)
         return Score(
             listing_id=listing.id,
-            fit_score=a.fit_score,
             rationale=a.rationale,
             flags=a.flags,
             breakdown={},
@@ -602,14 +578,9 @@ class GatedScorer:
 
 
 def build_scorer(cfg: Config, profile: CandidateProfile, store: Store | None = None):
-    """Select the Score producer from ai.scorer ("additive" | "gated").
+    """Return the gated Score producer.
 
-    store is optional and only consulted by GatedScorer, to cache Stage-1
-    extractions (see GatedScorer.extract); pass the open Store so a rescore reuses
-    already-paid-for extractions.
+    store is optional — pass the open Store so a rescore reuses already-paid-for
+    Stage-1 extractions (see GatedScorer.extract).
     """
-    if cfg.ai.scorer == "gated":
-        return GatedScorer(cfg, profile, store=store)
-    from .scoring import BulkScorer
-
-    return BulkScorer(cfg, profile)
+    return GatedScorer(cfg, profile, store=store)

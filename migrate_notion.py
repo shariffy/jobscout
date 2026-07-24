@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """One-shot Phase-3 migration: add Decision/Priority/Tier to the Notion board and
 backfill them on every linked page from the local best score. Run once after the
-gated scorer has produced scores you're happy with (ai.scorer = "gated" in
-config.toml); safe to re-run — it's idempotent (patches the same properties again).
+gated scorer has produced scores you're happy with; safe to re-run — it's
+idempotent (patches the same properties again).
 
     .venv/bin/python migrate_notion.py --dry-run   # preview, no writes
     .venv/bin/python migrate_notion.py              # patch schema + backfill pages

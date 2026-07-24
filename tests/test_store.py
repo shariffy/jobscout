@@ -76,18 +76,21 @@ def test_score_round_trip(store):
 
     score = Score(
         listing_id=listing.id,
-        fit_score=82,
         rationale="Strong match on Python and product experience.",
         flags=["remote-friendly", "series-b"],
         model="claude-haiku-4-5",
         tier="bulk",
+        decision="apply",
+        priority=12,
+        tier_label="T1",
     )
     saved = store.insert_score(score)
     assert saved.id is not None
 
     best = store.get_best_score(listing.id)
     assert best is not None
-    assert best.fit_score == 82
+    assert best.decision == "apply"
+    assert best.priority == 12
     assert "remote-friendly" in best.flags
 
 
@@ -96,7 +99,7 @@ def test_unscored_listings(store):
     b, _ = store.upsert_listing(make_listing(url="https://example.com/jobs/2", title="Role B"))
 
     store.insert_score(Score(
-        listing_id=a.id, fit_score=75, rationale="ok", model="haiku", tier="bulk"
+        listing_id=a.id, rationale="ok", model="haiku", tier="bulk", decision="apply",
     ))
 
     unscored = store.unscored_listings()
@@ -121,16 +124,21 @@ def test_application_upsert(store):
     assert refetched.status == "interviewing"
 
 
-def test_list_listings_min_fit(store):
-    a, _ = store.upsert_listing(make_listing(url="https://example.com/1", title="Low fit"))
-    b, _ = store.upsert_listing(make_listing(url="https://example.com/2", title="High fit"))
+def test_list_listings_apply_only(store):
+    a, _ = store.upsert_listing(make_listing(url="https://example.com/1", title="Reject"))
+    b, _ = store.upsert_listing(make_listing(url="https://example.com/2", title="Apply me"))
 
-    store.insert_score(Score(listing_id=a.id, fit_score=40, rationale="weak", model="haiku", tier="bulk"))
-    store.insert_score(Score(listing_id=b.id, fit_score=85, rationale="strong", model="haiku", tier="bulk"))
+    store.insert_score(Score(
+        listing_id=a.id, rationale="weak", model="haiku", tier="bulk", decision="no",
+    ))
+    store.insert_score(Score(
+        listing_id=b.id, rationale="strong", model="haiku", tier="bulk",
+        decision="apply", priority=10, tier_label="T1",
+    ))
 
-    results = store.list_listings(min_fit=70)
+    results = store.list_listings(apply_only=True)
     assert len(results) == 1
-    assert results[0]["title"] == "High fit"
+    assert results[0]["title"] == "Apply me"
 
 
 def test_gated_score_round_trip(store):
@@ -138,7 +146,7 @@ def test_gated_score_round_trip(store):
     gate_results = [{"name": "office", "status": "pass", "reason": "2 <= 3",
                      "evidence": "2 days/week", "confidence": 1.0}]
     score = Score(
-        listing_id=listing.id, fit_score=96, rationale="APPLY T1", flags=[],
+        listing_id=listing.id, rationale="APPLY T1", flags=[],
         model="test/model", tier="bulk",
         decision="apply", priority=2, tier_label="T1", gate_results=gate_results,
     )
@@ -151,24 +159,16 @@ def test_gated_score_round_trip(store):
     assert best.gate_results == gate_results
 
 
-def test_legacy_score_gets_fit_derived_decision(store):
-    """Additive scores carry no decision; the store derives it from fit >= 70."""
+def test_insert_score_defaults_empty_decision_to_no(store):
     listing, _ = store.upsert_listing(make_listing())
-    hi = store.insert_score(Score(listing_id=listing.id, fit_score=82, rationale="",
-                                  model="m", tier="bulk"))
-    assert hi.decision == "apply"
-
-    other, _ = store.upsert_listing(make_listing(title="Other role"))
-    lo = store.insert_score(Score(listing_id=other.id, fit_score=40, rationale="",
-                                  model="m", tier="bulk"))
-    assert lo.decision == "no"
+    saved = store.insert_score(Score(
+        listing_id=listing.id, rationale="", model="m", tier="bulk",
+    ))
+    assert saved.decision == "no"
 
 
-def test_migration_backfills_pre_gated_db(tmp_path):
-    """Opening a DB created before the gated columns and the scores
-    UNIQUE(listing_id) constraint adds the new columns, backfills decision from
-    the fit >= 70 shortlist convention, and dedupes down to the newest score
-    per listing (ties broken by id) to satisfy the new constraint."""
+def test_migration_drops_fit_and_backfills_decision(tmp_path):
+    """Opening a pre-gated DB drops fit_score, backfills decision, dedupes."""
     import sqlite3
 
     db = tmp_path / "old.db"
@@ -198,8 +198,11 @@ def test_migration_backfills_pre_gated_db(tmp_path):
     conn.close()
 
     with Store(db) as s:
-        rows = s.conn.execute("SELECT fit_score, decision FROM scores").fetchall()
-        assert [(r["fit_score"], r["decision"]) for r in rows] == [(85, "apply")]
+        cols = {r["name"] for r in s.conn.execute("PRAGMA table_info(scores)")}
+        assert "fit_score" not in cols
+        rows = s.conn.execute("SELECT decision, rationale FROM scores").fetchall()
+        assert len(rows) == 1
+        assert rows[0]["decision"] == "apply"
         best = s.get_best_score(1)
         assert best.decision == "apply"
         assert best.priority is None
@@ -237,28 +240,41 @@ def test_migration_adds_cascade_and_unique_constraint(tmp_path):
         assert any(fk["table"] == "listings" and fk["on_delete"] == "CASCADE" for fk in fks)
         indexes = s.conn.execute("PRAGMA index_list(scores)").fetchall()
         assert any(idx["unique"] for idx in indexes)
+        cols = {r["name"] for r in s.conn.execute("PRAGMA table_info(scores)")}
+        assert "fit_score" not in cols
 
 
 def test_score_cascade_deletes_with_listing(store):
     listing, _ = store.upsert_listing(make_listing())
-    store.insert_score(Score(listing_id=listing.id, fit_score=80, rationale="", model="m", tier="bulk"))
+    store.insert_score(Score(
+        listing_id=listing.id, rationale="", model="m", tier="bulk", decision="apply",
+    ))
 
     store.conn.execute("DELETE FROM listings WHERE id = ?", (listing.id,))
     store.conn.commit()
 
     assert store.get_best_score(listing.id) is None
-    row = store.conn.execute("SELECT COUNT(*) c FROM scores WHERE listing_id = ?", (listing.id,)).fetchone()
+    row = store.conn.execute(
+        "SELECT COUNT(*) c FROM scores WHERE listing_id = ?", (listing.id,)
+    ).fetchone()
     assert row["c"] == 0
 
 
 def test_insert_score_upserts_one_row_per_listing(store):
     listing, _ = store.upsert_listing(make_listing())
-    store.insert_score(Score(listing_id=listing.id, fit_score=40, rationale="first", model="m", tier="bulk"))
-    store.insert_score(Score(listing_id=listing.id, fit_score=90, rationale="second", model="m", tier="bulk"))
+    store.insert_score(Score(
+        listing_id=listing.id, rationale="first", model="m", tier="bulk", decision="no",
+    ))
+    store.insert_score(Score(
+        listing_id=listing.id, rationale="second", model="m", tier="bulk",
+        decision="apply", priority=5, tier_label="T2",
+    ))
 
-    rows = store.conn.execute("SELECT fit_score, rationale FROM scores WHERE listing_id = ?", (listing.id,)).fetchall()
+    rows = store.conn.execute(
+        "SELECT decision, rationale FROM scores WHERE listing_id = ?", (listing.id,)
+    ).fetchall()
     assert len(rows) == 1
-    assert rows[0]["fit_score"] == 90
+    assert rows[0]["decision"] == "apply"
     assert rows[0]["rationale"] == "second"
 
 
@@ -291,8 +307,8 @@ def test_update_listing_description(store):
 def test_score_round_trip_includes_assessment_version(store):
     listing, _ = store.upsert_listing(make_listing())
     store.insert_score(Score(
-        listing_id=listing.id, fit_score=80, rationale="", model="m", tier="bulk",
-        assessment_version="abc123",
+        listing_id=listing.id, rationale="", model="m", tier="bulk",
+        decision="apply", assessment_version="abc123",
     ))
     best = store.get_best_score(listing.id)
     assert best.assessment_version == "abc123"
@@ -306,7 +322,6 @@ def test_extraction_cache_round_trip(store):
     cached = store.get_extraction(listing.id, "model-a", "hash-a", 0)
     assert cached == '{"features": {}, "rules": {}}'
 
-    # a different model/prompt/repeat is a separate cache entry
     assert store.get_extraction(listing.id, "model-b", "hash-a", 0) is None
     assert store.get_extraction(listing.id, "model-a", "hash-a", 1) is None
 
@@ -329,9 +344,6 @@ def test_extraction_cascade_deletes_with_listing(store):
         "SELECT COUNT(*) c FROM extractions WHERE listing_id = ?", (listing.id,)
     ).fetchone()
     assert row["c"] == 0
-
-
-# --- file permissions (0600) ---
 
 
 @pytest.mark.skipif(os.name != "posix", reason="chmod perms are posix-only")

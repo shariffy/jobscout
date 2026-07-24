@@ -63,7 +63,8 @@ def generate_prep(
 
     user_content = f"Candidate profile:\n{_profile_text(profile)}\n\n---\n\nJob listing:\n{_listing_text(listing)}"
     if score:
-        user_content += f"\n\nFit score: {score.fit_score}/100 — {score.rationale}"
+        tier = f" {score.tier_label}" if score.tier_label not in ("", "none") else ""
+        user_content += f"\n\nAssessment: {score.decision.upper()}{tier} — {score.rationale}"
 
     # Server-side web search (when the provider offers one): the model decides
     # when to search, the provider runs it, and the grounded answer comes back in

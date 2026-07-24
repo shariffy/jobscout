@@ -43,7 +43,6 @@ CREATE TABLE IF NOT EXISTS listings (
 CREATE TABLE IF NOT EXISTS scores (
     id                 INTEGER PRIMARY KEY AUTOINCREMENT,
     listing_id         INTEGER NOT NULL UNIQUE REFERENCES listings(id) ON DELETE CASCADE,
-    fit_score          INTEGER NOT NULL,
     rationale          TEXT    NOT NULL DEFAULT '',
     flags              TEXT    NOT NULL DEFAULT '[]',
     breakdown          TEXT    NOT NULL DEFAULT '{}',
@@ -129,13 +128,7 @@ class Store:
                     _chmod_owner_only(sidecar)
 
     def _migrate(self) -> None:
-        """Add assessment columns to a pre-gated scores table, then backfill.
-
-        decision is derived from the fit >= 70 shortlist convention for any row
-        that lacks one (legacy additive rows included), so `decision = 'apply'`
-        and `fit_score >= 70` stay equivalent while both scorers coexist.
-        Priority/tier are left empty until a gated rescore.
-        """
+        """Add gated columns, backfill decision from legacy fit, then drop fit_score."""
         existing = {r["name"] for r in self.conn.execute("PRAGMA table_info(scores)")}
         for column, ddl in [
             ("decision", "decision TEXT NOT NULL DEFAULT ''"),
@@ -146,11 +139,13 @@ class Store:
         ]:
             if column not in existing:
                 self.conn.execute(f"ALTER TABLE scores ADD COLUMN {ddl}")
-        self.conn.execute(
-            "UPDATE scores SET decision = CASE WHEN fit_score >= 70 THEN 'apply' ELSE 'no' END "
-            "WHERE decision = ''"
-        )
-        if self._scores_needs_rebuild():
+                existing.add(column)
+        if "fit_score" in existing:
+            self.conn.execute(
+                "UPDATE scores SET decision = CASE WHEN fit_score >= 70 THEN 'apply' ELSE 'no' END "
+                "WHERE decision = ''"
+            )
+        if self._scores_needs_rebuild() or "fit_score" in existing:
             self._rebuild_scores_table()
 
         # Extraction cache: content fingerprint + real usage. Existing rows keep
@@ -188,13 +183,12 @@ class Store:
         return not (has_cascade and has_unique_listing_id)
 
     def _rebuild_scores_table(self) -> None:
-        """Rebuild scores with ON DELETE CASCADE + UNIQUE(listing_id).
+        """Rebuild scores: CASCADE + UNIQUE(listing_id), drop legacy fit_score.
 
-        SQLite can't ALTER a foreign key clause or add a constraint in place, so this
-        copies rows into a freshly-defined table. Dedupes first (keep the newest row
-        per listing_id, ties broken by id) since the UNIQUE constraint requires it.
-        foreign_keys must be off for the RENAME/DROP sequence (SQLite cannot toggle it
-        inside an open transaction, hence the commit before and after).
+        SQLite can't ALTER a foreign key clause or drop a column with dependents in
+        place on older schemas, so this copies rows into a freshly-defined table.
+        Dedupes first (keep the newest row per listing_id, ties broken by id).
+        foreign_keys must be off for the RENAME/DROP sequence.
         """
         self.conn.commit()
         self.conn.execute("PRAGMA foreign_keys=OFF")
@@ -218,7 +212,6 @@ class Store:
                 CREATE TABLE scores (
                     id                 INTEGER PRIMARY KEY AUTOINCREMENT,
                     listing_id         INTEGER NOT NULL UNIQUE REFERENCES listings(id) ON DELETE CASCADE,
-                    fit_score          INTEGER NOT NULL,
                     rationale          TEXT    NOT NULL DEFAULT '',
                     flags              TEXT    NOT NULL DEFAULT '[]',
                     breakdown          TEXT    NOT NULL DEFAULT '{}',
@@ -233,14 +226,22 @@ class Store:
                 )
                 """
             )
+            old_cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(scores_old)")}
+            # Backfill decision from fit on the renamed table if still empty.
+            if "fit_score" in old_cols:
+                self.conn.execute(
+                    "UPDATE scores_old SET decision = CASE WHEN fit_score >= 70 "
+                    "THEN 'apply' ELSE 'no' END WHERE decision = '' OR decision IS NULL"
+                )
             self.conn.execute(
                 """
-                INSERT INTO scores (id, listing_id, fit_score, rationale, flags, breakdown,
+                INSERT INTO scores (id, listing_id, rationale, flags, breakdown,
                                      model, tier, decision, priority, tier_label, gate_results,
                                      assessment_version, scored_at)
-                SELECT id, listing_id, fit_score, rationale, flags, breakdown,
-                       model, tier, decision, priority, tier_label, gate_results,
-                       assessment_version, scored_at
+                SELECT id, listing_id, rationale, flags, breakdown,
+                       model, tier, COALESCE(decision, ''), priority,
+                       COALESCE(tier_label, ''), COALESCE(gate_results, '[]'),
+                       COALESCE(assessment_version, ''), scored_at
                 FROM scores_old
                 """
             )
@@ -251,9 +252,6 @@ class Store:
             raise
         finally:
             self.conn.execute("PRAGMA foreign_keys=ON")
-        # One-time reclaim: this rebuild runs once per DB (the constraint check
-        # above short-circuits it thereafter), so VACUUM here is cheap over the
-        # DB's lifetime but returns the space freed by dropping scores_old.
         self.conn.execute("VACUUM")
 
     def close(self) -> None:
@@ -333,19 +331,23 @@ class Store:
         )
         self.conn.commit()
 
-    def list_listings(self, min_fit: int | None = None, limit: int = 100) -> list[dict]:
-        """Return listings joined with their score, optionally filtered by fit."""
+    def list_listings(self, apply_only: bool = False, limit: int = 100) -> list[dict]:
+        """Return listings joined with their score, optionally apply-only."""
         sql = """
-            SELECT l.*, s.fit_score, s.rationale, s.flags, s.tier,
+            SELECT l.*, s.rationale, s.flags, s.tier,
                    s.decision, s.priority, s.tier_label
             FROM listings l
             LEFT JOIN scores s ON s.listing_id = l.id
         """
         params: list = []
-        if min_fit is not None:
-            sql += " WHERE s.fit_score >= ?"
-            params.append(min_fit)
-        sql += " ORDER BY s.fit_score DESC NULLS LAST, l.fetched_at DESC LIMIT ?"
+        if apply_only:
+            sql += " WHERE s.decision = 'apply'"
+        sql += """
+            ORDER BY CASE WHEN s.decision = 'apply' THEN 0 ELSE 1 END,
+                     s.priority ASC NULLS LAST,
+                     l.fetched_at DESC
+            LIMIT ?
+        """
         params.append(limit)
         rows = self.conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
@@ -365,17 +367,14 @@ class Store:
     def insert_score(self, score: Score) -> Score:
         """Upsert the score for score.listing_id — one row per listing (UNIQUE
         constraint), so a rescore replaces the prior score instead of appending."""
-        # Legacy additive scores carry no decision; store the fit-derived one so
-        # decision-based queries see every row.
-        decision = score.decision or ("apply" if score.fit_score >= 70 else "no")
+        decision = score.decision or "no"
         self.conn.execute(
             """
-            INSERT INTO scores (listing_id, fit_score, rationale, flags, breakdown, model, tier,
+            INSERT INTO scores (listing_id, rationale, flags, breakdown, model, tier,
                                 decision, priority, tier_label, gate_results, assessment_version,
                                 scored_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(listing_id) DO UPDATE SET
-                fit_score=excluded.fit_score,
                 rationale=excluded.rationale,
                 flags=excluded.flags,
                 breakdown=excluded.breakdown,
@@ -390,7 +389,6 @@ class Store:
             """,
             (
                 score.listing_id,
-                score.fit_score,
                 score.rationale,
                 json.dumps(score.flags),
                 json.dumps(score.breakdown),
@@ -540,18 +538,17 @@ class Store:
         ).fetchall()
         return [dict(r) for r in rows]
 
-    def shortlist_candidates(self, min_fit: int) -> list[dict]:
-        """Listings with fit >= min_fit that don't yet have an application row."""
+    def shortlist_candidates(self) -> list[dict]:
+        """Apply-decision listings that don't yet have an application row."""
         rows = self.conn.execute(
             """
-            SELECT l.*, s.fit_score, s.rationale, s.flags
+            SELECT l.*, s.rationale, s.flags, s.decision, s.priority, s.tier_label
             FROM listings l
             JOIN scores s ON s.listing_id = l.id
-            WHERE s.fit_score >= ?
+            WHERE s.decision = 'apply'
             AND NOT EXISTS (SELECT 1 FROM applications a WHERE a.listing_id = l.id)
-            ORDER BY s.fit_score DESC
-            """,
-            (min_fit,),
+            ORDER BY s.priority ASC NULLS LAST
+            """
         ).fetchall()
         return [dict(r) for r in rows]
 
@@ -567,6 +564,7 @@ def _row_to_listing(row: sqlite3.Row) -> Listing:
 
 def _row_to_score(row: sqlite3.Row) -> Score:
     d = dict(row)
+    d.pop("fit_score", None)
     d["flags"] = json.loads(d.get("flags") or "[]")
     d["breakdown"] = json.loads(d.get("breakdown") or "{}")
     d["gate_results"] = json.loads(d.get("gate_results") or "[]")

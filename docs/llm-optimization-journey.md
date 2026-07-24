@@ -444,7 +444,8 @@ tooling/kernel ceiling, not a capacity one.
 ## 9. Reproducing
 
 Production tooling (committed): `validate_gate.py` (ground-truth regression gate),
-`bakeoff.py` (cross-provider harness), `migrate_notion.py` (one-shot board migration).
+`migrate_notion.py` (one-shot board migration). The additive-era `bakeoff.py`
+cross-provider harness was removed with `fit_score`.
 
 The exploratory analysis scripts behind §5 (`extraction_sweep.py`, `compare_scorers.py`,
 `scorecard_gated.py`, `deepseek_reasoning_probe.py`, `remeasure_office.py`) were one-off
@@ -452,7 +453,7 @@ and are intentionally **not** committed; their findings are captured here. All r
 12-listing stratified sample and through OpenRouter, keyed by an on-disk result cache so
 re-runs never re-paid completed calls.
 
-`ollama_bakeoff.py` (§8) is the local-inference analogue of `bakeoff.py`: same
+`ollama_bakeoff.py` (§8) was the local-inference analogue of the old `bakeoff.py`: same
 gate/priority policy, an on-disk result cache keyed by model + prompt + listing content
 + repeat, and `--local-only` to compare local models against each other without ever
 calling the paid cloud reference.

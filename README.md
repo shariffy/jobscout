@@ -77,51 +77,17 @@ Copy `config.example.toml` to `config.toml` (done for you by `init`) and fill it
   so different model slots can hit different providers/gateways — a bare slug
   with no prefix defaults to `openrouter`. Each provider resolves its key from
   its own env var (`OPEN_ROUTER_API_KEY`, `REQUESTY_API_KEY`, `GEMINI_API_KEY`,
-  `ANTHROPIC_API_KEY`), or override any of them under `[ai.api_keys]`; plus
-  `fit_threshold` (push to Notion at/above this score).
+  `ANTHROPIC_API_KEY`), or override any of them under `[ai.api_keys]`.
 - `[notion]` — integration `token` (or `NOTION_TOKEN`) and `database_id`.
-- `[scoring]` — the tunable rubric (below).
+- `[[gates]]` / `[priority]` — eligibility and ranking (below).
 - `[[sources]]` — the boards and feeds to scrape (see [docs/sources.md](docs/sources.md)).
 
-### Scoring
+### Assessment
 
-The scoring rubric is data-driven, so you tune it without touching code. The *content*
-of what matters to you comes from your profile; the `[scoring]` section holds the hard
-numbers:
-
-```toml
-[scoring]
-salary_floor = 100000            # deduct hard below this; omit to ignore pay entirely
-salary_currency = "$"            # wording only
-max_office_days = 3              # more than this in office is a hard negative; omit to ignore
-specialist_domain_ceiling = 100  # cap roles needing specialist knowledge you lack; 100 = off
-
-[scoring.weights]                # max points each dimension can add/subtract
-title = 20                       # match to your target job titles
-scope = 20                       # responsibility / seniority / autonomy fit
-company = 15                     # size, stage, and type of company
-stack = 10                       # how well the required skills/tools match yours
-domain = 10                      # penalty when the industry needs specialist knowledge
-salary = 3                       # penalty when pay is unstated
-office = 3                       # penalty when at your office-day limit
-dealbreakers = 50                # penalty when one of your stated dealbreakers is confirmed
-```
-
-All fields are optional with sensible defaults. Leaving `salary_floor` and
-`max_office_days` unset makes the scorer ignore pay and location — useful if your CV
-and goals already express those preferences, or for non-engineering searches.
-
-Your dealbreakers, must-haves, and preferred titles/domains are read from your profile
-(derived from your CV + goals), not from this file — so the same rubric works for any
-role. Edit your `goals` and re-run `jobscout profile` to change them.
-
-### Gated assessment (experimental)
-
-Set `scorer = "gated"` under `[ai]` to switch from the single additive fit score to a
-two-part decision: hard eligibility **gates** answer *"should I apply?"* and tiered
-**priority** answers *"which first?"*. The LLM only extracts facts from the listing
-(with confidence and a supporting quote); pure Python applies your policy, so decisions
-are stable, testable, and explainable.
+Hard eligibility **gates** answer *"should I apply?"* and tiered **priority** answers
+*"which first?"*. The LLM only extracts facts from the listing (with confidence and a
+supporting quote); pure Python applies your policy, so decisions are stable, testable,
+and explainable.
 
 - `[[gates]]` — non-compensatory vetoes: any failed gate means `decision = "no"`, no
   matter how good the rest is. Each is either a structured predicate over a canonical
@@ -133,11 +99,9 @@ are stable, testable, and explainable.
   or extracted role substance — substance wins), with per-unknown-gate penalties
   breaking ties within a tier.
 
-`fit_score` is still written (derived: apply ⇒ 70–100 by tier, no ⇒ below 70), so the
-shortlist threshold, Notion `Fit` column, and existing tooling keep working during the
-migration. See `config.example.toml` for the full config surface and
-`validate_gate.py --scorer gated` for regression-testing gates against roles you
-actually applied to.
+`jobscout shortlist` pushes `decision = apply` roles to Notion (Decision / Priority /
+Tier). See `config.example.toml` for the full config surface and `validate_gate.py`
+for regression-testing gates against roles you actually applied to.
 
 For how the gated pipeline came to be and how bulk scoring moved off Sonnet 4.6 to a
 cheaper model without losing quality, see
@@ -149,8 +113,8 @@ Every listing is sent to an LLM for scoring, so scans cost money. Pick a cheap
 `bulk_model` route (e.g. `google:gemini-3.1-flash-lite` on a free tier, or
 `openrouter:anthropic/claude-haiku-4-5`) since it runs on every listing, and
 reserve stronger `deep_model` / `prep_model` slugs for profile extraction and prep
-briefs. Use `bakeoff.py` to compare model cost and quality before you commit. Watch your
-volume when adding high-traffic sources.
+briefs. Use `validate_gate.py` to check a model change against roles you’ve applied to.
+Watch your volume when adding high-traffic sources.
 
 ## Privacy
 

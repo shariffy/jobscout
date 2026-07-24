@@ -23,21 +23,16 @@ def _load(config: str | None):
     return load_config(config)
 
 
-def _verdict(score, cfg) -> str:
-    """One-line rich markup for a fresh score: APPLY/NO + tier for gated
-    assessments, the plain fit number for legacy additive ones."""
-    if score.tier_label or score.gate_results:  # produced by the gated scorer
-        if score.decision == "apply":
-            tier = f" {score.tier_label}" if score.tier_label not in ("", "none") else ""
-            return f"[green]APPLY{tier}[/] [dim](fit {score.fit_score})[/]"
-        failed = ", ".join(
-            f.removeprefix("gate-fail-") for f in score.flags if f.startswith("gate-fail-")
-        )
-        return f"[red]NO[/] ({failed})" if failed else "[red]NO[/]"
-    color = "green" if score.fit_score >= cfg.ai.fit_threshold else (
-        "yellow" if score.fit_score >= 50 else "red"
+def _verdict(score, cfg=None) -> str:
+    """One-line rich markup: APPLY + tier, or NO (+ failed gates)."""
+    if score.decision == "apply":
+        tier = f" {score.tier_label}" if score.tier_label not in ("", "none") else ""
+        pri = f" [dim]p{score.priority}[/]" if score.priority is not None else ""
+        return f"[green]APPLY{tier}[/]{pri}"
+    failed = ", ".join(
+        f.removeprefix("gate-fail-") for f in score.flags if f.startswith("gate-fail-")
     )
-    return f"[{color}]{score.fit_score:3d}[/]"
+    return f"[red]NO[/] ({failed})" if failed else "[red]NO[/]"
 
 
 def _notion(cfg) -> "NotionSync":
@@ -221,7 +216,7 @@ def scan(
 
         console.print(
             f"\n[bold]Done.[/] {scored}/{len(new_listings)} scored. "
-            f"Run [bold]jobscout list --min-fit {cfg.ai.fit_threshold}[/] to see top matches."
+            f"Run [bold]jobscout list --apply[/] to see top matches."
         )
 
 
@@ -232,23 +227,24 @@ def scan(
 @app.command()
 def shortlist(
     config: Optional[str] = _CONFIG_OPT,
-    min_fit: int = typer.Option(None, "--min-fit", "-f", help="Override fit threshold from config"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show candidates without pushing to Notion"),
 ) -> None:
-    """Push roles above the fit threshold to your Notion board."""
+    """Push apply-decision roles to your Notion board."""
     cfg = _load(config)
-    threshold = min_fit if min_fit is not None else cfg.ai.fit_threshold
 
     with Store(cfg.store.db_path) as store:
-        candidates = store.shortlist_candidates(threshold)
+        candidates = store.shortlist_candidates()
 
         if not candidates:
-            console.print(f"[dim]No new candidates above fit {threshold}. Try a lower --min-fit.[/]")
+            console.print("[dim]No new apply candidates. Run scan/rescore first.[/]")
             raise typer.Exit()
 
-        console.print(f"[bold]{len(candidates)}[/] candidate(s) above fit {threshold}:\n")
+        console.print(f"[bold]{len(candidates)}[/] apply candidate(s):\n")
         for r in candidates:
-            console.print(f"  [green]{r['fit_score']:3d}[/]  {r['title']} @ {r['company']}")
+            tier = r.get("tier_label") or "—"
+            pri = r.get("priority")
+            pri_s = f"p{pri}" if pri is not None else "p—"
+            console.print(f"  [green]{tier:4}[/] {pri_s:>5}  {r['title']} @ {r['company']}")
 
         if dry_run:
             console.print("\n[dim]Dry run — nothing pushed to Notion.[/]")
@@ -340,14 +336,14 @@ def prep(
 
 @app.command(name="list")
 def list_jobs(
-    min_fit: int = typer.Option(0, "--min-fit", "-f", help="Minimum fit score to show"),
+    apply_only: bool = typer.Option(False, "--apply", help="Show only apply-decision listings"),
     limit: int = typer.Option(50, "--limit", "-n", help="Maximum rows to show"),
     config: Optional[str] = _CONFIG_OPT,
 ) -> None:
     """Show ranked job matches from the local database."""
     cfg = _load(config)
     with Store(cfg.store.db_path) as store:
-        rows = store.list_listings(min_fit=min_fit or None, limit=limit)
+        rows = store.list_listings(apply_only=apply_only, limit=limit)
 
     if not rows:
         console.print("[dim]No listings found. Run [bold]jobscout scan[/] first.[/]")
@@ -355,7 +351,7 @@ def list_jobs(
 
     table = Table(show_header=True, header_style="bold", box=None, pad_edge=False)
     table.add_column("ID", style="dim", width=5)
-    table.add_column("Fit", justify="right", width=4)
+    table.add_column("Pri", justify="right", width=5)
     table.add_column("Decision", width=9)
     table.add_column("Tier", width=4)
     table.add_column("Title", min_width=30)
@@ -364,7 +360,7 @@ def list_jobs(
     table.add_column("Source", style="dim")
 
     for r in rows:
-        fit = str(r["fit_score"]) if r.get("fit_score") is not None else "—"
+        pri = str(r["priority"]) if r.get("priority") is not None else "—"
         decision = r.get("decision") or "—"
         if decision == "apply":
             decision = "[green]apply[/]"
@@ -372,7 +368,7 @@ def list_jobs(
             decision = "[red]no[/]"
         table.add_row(
             str(r["id"]),
-            fit,
+            pri,
             decision,
             r.get("tier_label") or "—",
             r["title"],
@@ -389,7 +385,7 @@ def list_jobs(
 def rescore(
     listing_ids: list[int] = typer.Argument(default=None, help="Listing IDs to rescore (from jobscout list)"),
     all_listings: bool = typer.Option(False, "--all", help="Rescore every listing in the database"),
-    min_fit: int = typer.Option(0, "--min-fit", "-f", help="With --all, only rescore listings scoring at or above this"),
+    apply_only: bool = typer.Option(False, "--apply", help="With --all, only rescore apply-decision listings"),
     force: bool = typer.Option(
         False, "--force",
         help="With --all, also rescore listings already scored under the current config",
@@ -438,9 +434,8 @@ def rescore(
                 WHERE (a.status IS NULL OR a.status != 'not_interested')
             """
             params: list = []
-            if min_fit:
-                sql += " AND s.fit_score >= ?"
-                params.append(min_fit)
+            if apply_only:
+                sql += " AND s.decision = 'apply'"
             if not force:
                 # Skip listings already scored under this exact config — the common
                 # case of re-running rescore --all with nothing changed is then free.
@@ -816,11 +811,10 @@ def chase(
 
 @app.command()
 def prune(
-    min_fit: int = typer.Option(70, "--min-fit", help="Archive Notion pages scoring below this threshold."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Print what would be archived without doing it."),
     config: Optional[str] = _CONFIG_OPT,
 ) -> None:
-    """Archive Notion pages for listings that scored below the threshold (or were never scored)."""
+    """Archive Notion pages for listings that are not apply (or were never scored)."""
     cfg = _load(config)
     if not cfg.notion.token or not cfg.notion.database_id:
         console.print("[red]Notion not configured.[/]")
@@ -831,27 +825,26 @@ def prune(
     ns = NotionSync(token=cfg.notion.token, database_id=cfg.notion.database_id)
 
     with Store(cfg.store.db_path) as store:
-        # Find Notion-linked applications where current score < threshold or no score
         rows = store.conn.execute("""
             SELECT a.listing_id, a.notion_page_id, l.title, l.company,
-                   COALESCE(s.fit_score, -1) AS fit_score, a.status
+                   COALESCE(s.decision, '') AS decision, a.status
             FROM applications a
             JOIN listings l ON l.id = a.listing_id
             LEFT JOIN scores s ON s.listing_id = a.listing_id
             WHERE a.notion_page_id IS NOT NULL
               AND (a.status IS NULL OR a.status NOT IN ('applied', 'interviewing', 'offer'))
-              AND (s.fit_score IS NULL OR s.fit_score < ?)
-        """, (min_fit,)).fetchall()
+              AND (s.decision IS NULL OR s.decision != 'apply')
+        """).fetchall()
 
         if not rows:
-            console.print(f"[green]Nothing to prune (all Notion pages score ≥ {min_fit}).[/]")
+            console.print("[green]Nothing to prune (all Notion pages are apply).[/]")
             return
 
-        console.print(f"[bold]{'Would archive' if dry_run else 'Archiving'} {len(rows)} Notion pages below {min_fit}:[/]\n")
+        console.print(f"[bold]{'Would archive' if dry_run else 'Archiving'} {len(rows)} non-apply Notion page(s):[/]\n")
         archived = 0
         for row in rows:
-            lid, page_id, title, company, fit, status = row
-            label = f"  {fit:3d}  {title[:45]} @ {company}"
+            lid, page_id, title, company, decision, status = row
+            label = f"  {(decision or '—'):5}  {title[:45]} @ {company}"
             if dry_run:
                 console.print(f"[dim]{label}[/]")
             else:

@@ -28,19 +28,11 @@ Nice-to-haves: Python or TypeScript stack, series B+ startup or established tech
 bulk_model = "google:gemini-3.1-flash-lite"
 deep_model = "openrouter:anthropic/claude-sonnet-4-6"
 prep_model = "openrouter:anthropic/claude-sonnet-4-6"
-# Which producer scores listings:
-#   "additive" — the LLM judges a single 0-100 fit score (legacy).
-#   "gated" (default, recommended) — the LLM only extracts facts; Python decides
-#                          apply/no from your [[gates]] and ranks the apply set
-#                          from [priority]. fit_score is still written (derived)
-#                          so Notion/CLI keep working.
-scorer = "gated"
-scorer_repeats = 3          # gated only: extract N times per listing and take the
-                             # majority decision (self-consistency). >1 buys stability.
+# Extract N times per listing and take the majority decision (self-consistency).
+scorer_repeats = 3
 # scorer_concurrency = 4     # how many listings to score at once in a batch (scan /
 #                            # rescore). Peak in-flight requests ~= concurrency *
 #                            # (scorer_repeats // 2 + 1); keep modest vs rate limits. 1 = serial.
-fit_threshold = 70          # push to Notion when fit >= this
 # Reasoning effort for the bulk model. Omit for the provider default, or set it
 # (providers with no reasoning support ignore this):
 bulk_reasoning_effort = "low"   # low / medium / high / max / min / none
@@ -52,33 +44,10 @@ database_id = ""            # the board database ID (created by `jobscout init`)
 [store]
 db_path = "jobscout.db"
 
-# --- scoring ---
-# Tune how listings are scored. Everything else about what you want comes from
-# your CV + goals (the profile); this section holds the hard numbers.
-[scoring]
-# salary_floor: omit to ignore compensation entirely. currency is just wording.
-# salary_floor = 100000
-# salary_currency = "$"
-# max_office_days: omit to ignore location/remote policy. Set to e.g. 2 to treat
-# roles requiring more than 2 office days/week as a hard negative.
-# max_office_days = 3
-# specialist_domain_ceiling: cap the score for roles needing specialist domain
-# knowledge you lack. 100 = no cap (default).
-# specialist_domain_ceiling = 100
-
-# Max points each dimension can add/subtract. Defaults shown — uncomment to retune.
-# [scoring.weights]
-# title = 20        # match to your target job titles
-# scope = 20        # responsibility / seniority / autonomy fit
-# company = 15      # size, stage, and type of company
-# stack = 10        # how well required skills/tools match yours
-# domain = 10       # penalty when the industry needs specialist knowledge
-# salary = 3        # penalty when pay is unstated
-# office = 3        # penalty when at your office-day limit
-# dealbreakers = 50 # penalty when a stated dealbreaker is confirmed
-
-# --- gated assessment (used when ai.scorer = "gated") ---
-# Gates are hard eligibility vetoes: any failed gate => decision = "no", no matter
+# --- gated assessment ---
+# The LLM extracts facts; Python decides apply/no from [[gates]] and ranks the
+# apply set from [priority]. Gates are hard eligibility vetoes: any failed gate
+# => decision = "no", no matter
 # how good everything else is. Two forms:
 #
 #   Structured — a predicate over a canonical extracted feature. Features the LLM
