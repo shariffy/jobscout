@@ -187,6 +187,9 @@ pytest
 ruff check jobscout/
 ```
 
+`requirements.lock` pins the exact versions this project is tested against
+(`pip install -r requirements.lock`); `pyproject.toml` holds the loose ranges.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
