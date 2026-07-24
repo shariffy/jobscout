@@ -152,6 +152,33 @@ reserve stronger `deep_model` / `prep_model` slugs for profile extraction and pr
 briefs. Use `bakeoff.py` to compare model cost and quality before you commit. Watch your
 volume when adding high-traffic sources.
 
+## Privacy
+
+jobscout is a thin client over third-party LLM APIs and Notion — nothing is kept
+private by default that those services don't already see:
+
+- **Your CV, goals, and derived candidate profile** (`candidate_profile.json`) are
+  sent to whichever LLM providers your `[ai]` routes point at — OpenRouter,
+  Requesty, Google, or Anthropic — on every profile build, scoring run, and prep.
+- **Every scraped listing's full text** (title, company, description) is sent to
+  those same providers for scoring, and again for `prep` briefs.
+- **Strong matches are written to your Notion workspace**: title, company, score,
+  decision/tier, and the LLM's rationale, via the token in `[notion]`/`NOTION_TOKEN`.
+- **`prep` uses server-side web search** (where the provider supports it — see
+  `jobscout/llm.py`) and explicitly asks the model to name real people at the
+  target company (from LinkedIn, the company site, Crunchbase, press) to draft
+  outreach messages. That's a deliberate feature, not incidental — know that it's
+  happening before you run it against a company you'd rather not surface yourself to.
+- **No telemetry.** jobscout doesn't phone home or report usage anywhere beyond the
+  providers and services you've configured.
+
+**Secrets:** prefer environment variables (`OPEN_ROUTER_API_KEY`, `GEMINI_API_KEY`,
+`ANTHROPIC_API_KEY`, `REQUESTY_API_KEY`, `NOTION_TOKEN`, …) over the config-file
+`[ai.api_keys]` / `[notion].token` fields — env vars keep credentials out of a file
+that could be committed or read by another local user. If you do put a secret in
+`config.toml`, it's created with owner-only (`0600`) permissions, as are the
+profile cache and SQLite database — but env vars are still the safer default.
+
 ## Development
 
 ```bash
