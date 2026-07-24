@@ -88,10 +88,9 @@ OPENROUTER_MODELS: list[tuple[str, dict | None]] = [
     ("tencent/hy3:free", {"enabled": False}),                  # Hy3, non-think
 ]
 
-REPORT_DIR = Path(
-    "/private/tmp/claude-501/-Users-shariffy-code-sandbox-jobscout/"
-    "da8458c8-1d5f-4e45-96ed-b0a2d25e88fa/scratchpad"
-)
+# Where the report lands: JOBSCOUT_REPORT_DIR if set, else ./bakeoff_reports/
+# (created on demand). Avoids hardcoding any one machine's temp/scratch path.
+REPORT_DIR = Path(os.environ.get("JOBSCOUT_REPORT_DIR") or "bakeoff_reports")
 
 
 class Result:

@@ -19,3 +19,4 @@ cv.md
 playwright-browser/
 .sweep_cache.jsonl
 .cursor/
+bakeoff_reports/
