@@ -114,7 +114,8 @@ def assessment_config_hash(cfg: Config) -> str:
         "gates": [g.model_dump() for g in cfg.gates],
         "priority": cfg.priority.model_dump(),
     }
-    return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()[:16]
+    digest = hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
+    return digest[:16]
 
 
 _CONFIG_PATHS = ["config.toml", "~/.config/jobscout/config.toml"]

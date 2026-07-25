@@ -6,7 +6,7 @@ feature vocabulary in features.py; the priority tiers rank the apply set.
 """
 from __future__ import annotations
 
-from typing import Any, Literal, Union
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -35,7 +35,7 @@ class GateConfig(BaseModel):
     # Structured gates only: keyword hits in the listing text set the feature before
     # evaluation. A list applies one shared value (keyword_value, else gate value);
     # a dict maps each keyword/phrase to its own value (e.g. jvm => java).
-    match_keywords: Union[list[str], dict[str, Any]] = Field(default_factory=list)
+    match_keywords: list[str] | dict[str, Any] = Field(default_factory=list)
     keyword_value: Any = None
 
     @model_validator(mode="after")

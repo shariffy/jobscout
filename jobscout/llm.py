@@ -132,7 +132,9 @@ def resolve_route(cfg: Config, model_spec: str) -> Route:
     """Resolve a "provider:model" config string to a ready client + provider info."""
     provider_name, model = parse_model(model_spec)
     client = _provider_client(cfg, provider_name)
-    return Route(client=client, model=model, provider_name=provider_name, provider=PROVIDERS[provider_name])
+    return Route(
+        client=client, model=model, provider_name=provider_name, provider=PROVIDERS[provider_name]
+    )
 
 
 def extra_body_for(provider: Provider, reasoning_effort: str | None) -> dict:

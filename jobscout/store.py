@@ -4,10 +4,10 @@ import json
 import os
 import sqlite3
 import threading
+from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Generator
 
 from .models import Application, Listing, Score
 

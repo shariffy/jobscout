@@ -6,7 +6,7 @@ from typing import Any
 
 import httpx
 
-from .models import Application, Listing, Score
+from .models import Listing, Score
 
 _API = "https://api.notion.com/v1"
 _NOTION_VERSION = "2022-06-28"
@@ -277,7 +277,7 @@ class NotionSync:
             cursor = data.get("next_cursor")
         return results
 
-    def update_score_callout(self, page_id: str, score: "Score") -> None:
+    def update_score_callout(self, page_id: str, score: Score) -> None:
         """Update the 🤖 callout block on an existing page with the latest score."""
         children = self._get(f"/blocks/{page_id}/children").get("results", [])
         callout_id = next(
