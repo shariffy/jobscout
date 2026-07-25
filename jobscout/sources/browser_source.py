@@ -7,7 +7,7 @@ from bs4 import BeautifulSoup
 
 from ..config import SourceConfig
 from ..models import Listing
-from .http_source import _UA, _extract_jd, page_urls, parse_listings
+from .http_source import _UA, _assert_safe_url, _extract_jd, page_urls, parse_listings
 
 _TIMEOUT_MS = 30_000
 
@@ -47,6 +47,9 @@ class BrowserSource:
                 for i, url in enumerate(page_urls(self._cfg)):
                     if i:
                         time.sleep(0.5)  # be polite when paginating
+                    # ponytail: first-hop only; full request interception deferred —
+                    # Chromium does its own DNS/redirects/subresource loads.
+                    _assert_safe_url(url)
                     page.goto(url, wait_until="networkidle")
                     page_listings = parse_listings(
                         page.content(), url, self._cfg.selectors, self.name
@@ -80,8 +83,9 @@ class BrowserSource:
         visible email/text input and the first password input, then submits.
         It works for plain single-page login forms and nothing fancier
         (no SSO redirects, multi-step logins, CAPTCHAs, or 2FA). If a board
-        needs more than that, this heuristic will silently fail to log in —
-        write a dedicated login routine for it instead.
+        needs more than that, this heuristic will silently fail to log in and
+        the subsequent scrape will proceed unauthenticated — likely returning
+        nothing or a public-only view. Write a dedicated login routine instead.
         """
         cfg = self._cfg
         if not cfg.login_url:
@@ -116,6 +120,9 @@ class BrowserSource:
     def _enrich(self, page, listing: Listing) -> Listing:
         """Open the listing's own page in the browser and pull a richer description."""
         try:
+            # ponytail: first-hop only; full request interception deferred —
+            # Chromium does its own DNS/redirects/subresource loads.
+            _assert_safe_url(listing.url)
             page.goto(listing.url, wait_until="networkidle")
             html = page.content()
         except Exception:

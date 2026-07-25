@@ -6,7 +6,7 @@ import pytest
 
 from jobscout.config import SourceConfig
 from jobscout.sources import http_source
-from jobscout.sources.http_source import HttpSource, SSRFError, _assert_safe_url
+from jobscout.sources.http_source import HttpSource, SSRFError, _assert_safe_url, safe_get
 
 
 def _fake_getaddrinfo(mapping: dict[str, str]):
@@ -61,6 +61,37 @@ def test_allows_public_ip(monkeypatch):
         http_source.socket, "getaddrinfo", _fake_getaddrinfo({"example.com": "93.184.216.34"})
     )
     _assert_safe_url("http://example.com/x")  # no raise
+
+
+def test_rejects_cgnat(monkeypatch):
+    # 100.64.0.0/10 is CGNAT — not covered by is_private, but not is_global either.
+    monkeypatch.setattr(
+        http_source.socket, "getaddrinfo", _fake_getaddrinfo({"cgnat.example.com": "100.64.0.1"})
+    )
+    with pytest.raises(SSRFError):
+        _assert_safe_url("http://cgnat.example.com/x")
+
+
+# --- safe_get rejects disallowed hosts ---
+
+def test_safe_get_rejects_private_host(monkeypatch):
+    monkeypatch.setattr(
+        http_source.socket,
+        "getaddrinfo",
+        _fake_getaddrinfo({"internal.example.com": "10.0.0.5"}),
+    )
+    with pytest.raises(SSRFError):
+        safe_get("http://internal.example.com/x")
+
+
+def test_safe_get_rejects_cgnat_host(monkeypatch):
+    monkeypatch.setattr(
+        http_source.socket,
+        "getaddrinfo",
+        _fake_getaddrinfo({"cgnat.example.com": "100.64.0.1"}),
+    )
+    with pytest.raises(SSRFError):
+        safe_get("http://cgnat.example.com/x")
 
 
 # --- HttpSource._get follows redirects, checking every hop ---

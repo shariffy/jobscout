@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import re
 import shutil
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Optional
 
 import typer
 from rich.console import Console
@@ -35,7 +33,7 @@ def _verdict(score, cfg=None) -> str:
     return f"[red]NO[/] ({failed})" if failed else "[red]NO[/]"
 
 
-def _notion(cfg) -> "NotionSync":
+def _notion(cfg):
     from .notion_sync import NotionSync
     if not cfg.notion.token:
         console.print("[red]No Notion token in config.toml.[/]")
@@ -55,8 +53,8 @@ def _notion(cfg) -> "NotionSync":
 
 @app.command()
 def init(
-    config: Optional[str] = _CONFIG_OPT,
-    notion_parent: Optional[str] = typer.Option(
+    config: str | None = _CONFIG_OPT,
+    notion_parent: str | None = typer.Option(
         None, "--notion-parent", help="Notion page URL or ID to create the pipeline database under"
     ),
 ) -> None:
@@ -105,7 +103,7 @@ def init(
 
 @app.command()
 def profile(
-    config: Optional[str] = _CONFIG_OPT,
+    config: str | None = _CONFIG_OPT,
     force: bool = typer.Option(False, "--force", "-f", help="Rebuild even if cache exists"),
 ) -> None:
     """(Re)build candidate profile from CV + goals and cache to candidate_profile.json."""
@@ -132,7 +130,7 @@ def profile(
 
 @app.command()
 def scan(
-    config: Optional[str] = _CONFIG_OPT,
+    config: str | None = _CONFIG_OPT,
     dry_run: bool = typer.Option(False, "--dry-run", help="Fetch but don't save to DB"),
     no_score: bool = typer.Option(False, "--no-score", help="Skip AI scoring after fetching"),
 ) -> None:
@@ -226,7 +224,7 @@ def scan(
 
 @app.command()
 def shortlist(
-    config: Optional[str] = _CONFIG_OPT,
+    config: str | None = _CONFIG_OPT,
     dry_run: bool = typer.Option(False, "--dry-run", help="Show candidates without pushing to Notion"),
 ) -> None:
     """Push apply-decision roles to your Notion board."""
@@ -286,14 +284,14 @@ def shortlist(
 @app.command()
 def prep(
     listing_id: int = typer.Argument(..., help="Listing ID (from jobscout list)"),
-    config: Optional[str] = _CONFIG_OPT,
+    config: str | None = _CONFIG_OPT,
 ) -> None:
     """Generate an application prep brief for a role and append it to its Notion page."""
-    import httpx
     from bs4 import BeautifulSoup
+
     from .prep import generate_prep
     from .profile import build_profile
-    from .sources.http_source import _extract_jd
+    from .sources.http_source import _extract_jd, safe_get
 
     cfg = _load(config)
 
@@ -306,10 +304,8 @@ def prep(
         app_row = store.get_application(listing_id)
 
     # Enrich description from live URL
-    ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     try:
-        resp = httpx.get(listing.url, headers={"User-Agent": ua}, follow_redirects=True, timeout=20)
-        jd = _extract_jd(BeautifulSoup(resp.text, "html.parser"))
+        jd = _extract_jd(BeautifulSoup(safe_get(listing.url), "html.parser"))
         if jd and len(jd) > len(listing.description or ""):
             listing = listing.model_copy(update={"description": jd})
     except Exception as exc:
@@ -338,7 +334,7 @@ def prep(
 def list_jobs(
     apply_only: bool = typer.Option(False, "--apply", help="Show only apply-decision listings"),
     limit: int = typer.Option(50, "--limit", "-n", help="Maximum rows to show"),
-    config: Optional[str] = _CONFIG_OPT,
+    config: str | None = _CONFIG_OPT,
 ) -> None:
     """Show ranked job matches from the local database."""
     cfg = _load(config)
@@ -390,15 +386,15 @@ def rescore(
         False, "--force",
         help="With --all, also rescore listings already scored under the current config",
     ),
-    config: Optional[str] = _CONFIG_OPT,
+    config: str | None = _CONFIG_OPT,
 ) -> None:
     """Re-score listings with the current profile, fetching full JD from the listing URL."""
-    import httpx
     from bs4 import BeautifulSoup
+
     from .assess import build_scorer
     from .config import assessment_config_hash
     from .profile import build_profile
-    from .sources.http_source import _extract_jd
+    from .sources.http_source import _extract_jd, safe_get
 
     cfg = _load(config)
 
@@ -417,8 +413,6 @@ def rescore(
     if cfg.notion.token and cfg.notion.database_id:
         from .notion_sync import NotionSync
         ns = NotionSync(token=cfg.notion.token, database_id=cfg.notion.database_id)
-
-    ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
     with Store(cfg.store.db_path) as store:
         # Passing store lets the gated scorer serve/save Stage-1 extractions from
@@ -466,9 +460,7 @@ def rescore(
             enriched_desc = listing.description
             fetch_err = None
             try:
-                resp = httpx.get(listing.url, headers={"User-Agent": ua},
-                                 follow_redirects=True, timeout=20)
-                jd = _extract_jd(BeautifulSoup(resp.text, "html.parser"))
+                jd = _extract_jd(BeautifulSoup(safe_get(listing.url), "html.parser"))
                 if jd and len(jd) > len(enriched_desc or ""):
                     enriched_desc = jd
             except Exception as exc:
@@ -496,7 +488,7 @@ def rescore(
             if app_row and app_row.notion_page_id and ns and app_row.status != "not_interested":
                 try:
                     ns.update_score(app_row.notion_page_id, score)
-                    console.print(f"       [dim]Notion updated.[/]")
+                    console.print("       [dim]Notion updated.[/]")
                 except Exception as exc:
                     console.print(f"       [yellow]Notion update failed: {exc}[/]")
 
@@ -582,7 +574,7 @@ def set_status(
     chase_days: int = typer.Option(
         7, "--chase-days", help="Days until follow-up reminder (only used with --to applied)"
     ),
-    config: Optional[str] = _CONFIG_OPT,
+    config: str | None = _CONFIG_OPT,
 ) -> None:
     """Set one or more listings' status locally and in Notion.
 
@@ -672,18 +664,19 @@ def _sync_status_drift(store, ns, console, board_statuses: list[dict]) -> int:
 @app.command()
 def watch(
     interval: int = typer.Option(60, "--interval", "-i", help="Poll interval in seconds"),
-    config: Optional[str] = _CONFIG_OPT,
+    config: str | None = _CONFIG_OPT,
 ) -> None:
     """Poll the Notion board for Status changes and pending Actions, and sync them."""
     import time
-    import httpx as _httpx
+
     from bs4 import BeautifulSoup as _BS
+
     from .assess import build_scorer
     from .models import Application
-    from .notion_sync import NotionSync
     from .prep import generate_prep
     from .profile import build_profile
     from .sources.http_source import _extract_jd
+    from .sources.http_source import safe_get as _safe_get
 
     cfg = _load(config)
     ns = _notion(cfg)
@@ -695,8 +688,6 @@ def watch(
         ns.update_schema()
     except Exception:
         pass
-
-    _ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
     while True:
         try:
@@ -733,8 +724,7 @@ def watch(
                         profile_obj = build_profile(cfg)
                         scorer = build_scorer(cfg, profile_obj, store)
                         try:
-                            resp = _httpx.get(listing.url, headers={"User-Agent": _ua}, follow_redirects=True, timeout=20)
-                            jd = _extract_jd(_BS(resp.text, "html.parser"))
+                            jd = _extract_jd(_BS(_safe_get(listing.url), "html.parser"))
                             if jd and len(jd) > len(listing.description or ""):
                                 store.update_listing_description(lid, jd)
                                 listing = listing.model_copy(update={"description": jd})
@@ -750,8 +740,7 @@ def watch(
                         profile_obj = build_profile(cfg)
                         score = store.get_best_score(lid)
                         try:
-                            resp = _httpx.get(listing.url, headers={"User-Agent": _ua}, follow_redirects=True, timeout=20)
-                            jd = _extract_jd(_BS(resp.text, "html.parser"))
+                            jd = _extract_jd(_BS(_safe_get(listing.url), "html.parser"))
                             if jd and len(jd) > len(listing.description or ""):
                                 listing = listing.model_copy(update={"description": jd})
                         except Exception:
@@ -764,7 +753,7 @@ def watch(
                         store.upsert_application(app_row)
                         ns._patch(f"/pages/{page_id}", {"properties": {"Status": {"select": {"name": "prepping"}}}})
                         ns.reset_action(page_id)
-                        console.print(f"    [dim]prep brief appended → status: prepping[/]")
+                        console.print("    [dim]prep brief appended → status: prepping[/]")
 
                     else:
                         # Unknown action — clear it
@@ -779,7 +768,7 @@ def watch(
 
 @app.command()
 def chase(
-    config: Optional[str] = _CONFIG_OPT,
+    config: str | None = _CONFIG_OPT,
 ) -> None:
     """Show applications that are due for follow-up today."""
     cfg = _load(config)
@@ -812,7 +801,7 @@ def chase(
 @app.command()
 def prune(
     dry_run: bool = typer.Option(False, "--dry-run", help="Print what would be archived without doing it."),
-    config: Optional[str] = _CONFIG_OPT,
+    config: str | None = _CONFIG_OPT,
 ) -> None:
     """Archive Notion pages for listings that are not apply (or were never scored)."""
     cfg = _load(config)

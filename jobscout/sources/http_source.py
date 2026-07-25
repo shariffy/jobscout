@@ -14,7 +14,7 @@ from ..config import SelectorConfig, SourceConfig
 from ..models import Listing
 from .base import make_absolute, normalise_text
 
-_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"  # noqa: E501
 _MAX_REDIRECTS = 5
 
 
@@ -23,14 +23,7 @@ class SSRFError(ValueError):
 
 
 def _is_disallowed_ip(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    return (
-        addr.is_private
-        or addr.is_loopback
-        or addr.is_link_local
-        or addr.is_reserved
-        or addr.is_multicast
-        or addr.is_unspecified
-    )
+    return not addr.is_global
 
 
 def _assert_safe_url(url: str) -> None:
@@ -57,6 +50,26 @@ def _assert_safe_url(url: str) -> None:
             )
 
 
+def safe_get(url: str) -> str:
+    """Fetch url, following redirects manually so every hop gets the SSRF host check.
+
+    Raises SSRFError if any hop resolves to a disallowed address, uses a
+    non-http(s) scheme, or exceeds the redirect limit.  A hostile job board could
+    redirect a listing URL at an internal address — this catches that on every hop,
+    not just the first.
+    """
+    with httpx.Client(follow_redirects=False, timeout=30) as client:
+        for _ in range(_MAX_REDIRECTS + 1):
+            _assert_safe_url(url)
+            resp = client.get(url, headers={"User-Agent": _UA})
+            if resp.is_redirect and resp.headers.get("location"):
+                url = urljoin(url, resp.headers["location"])
+                continue
+            resp.raise_for_status()
+            return resp.text
+    raise SSRFError(f"Too many redirects (> {_MAX_REDIRECTS}) fetching {url!r}")
+
+
 class HttpSource:
     """Scrapes a job listing page using config-driven CSS selectors."""
 
@@ -74,23 +87,11 @@ class HttpSource:
                 break  # empty page — end of results
             listings.extend(page)
         if self._cfg.selectors.fetch_detail:
-            listings = [self._enrich(l) for l in listings]
+            listings = [self._enrich(lst) for lst in listings]
         return listings
 
     def _get(self, url: str) -> str:
-        # Redirects are followed manually (not via httpx's follow_redirects) so every
-        # hop — not just the initial URL — gets the SSRF host check; a hostile board
-        # could otherwise redirect a listing/detail URL at an internal address.
-        with httpx.Client(follow_redirects=False, timeout=30) as client:
-            for _ in range(_MAX_REDIRECTS + 1):
-                _assert_safe_url(url)
-                resp = client.get(url, headers={"User-Agent": _UA})
-                if resp.is_redirect and resp.headers.get("location"):
-                    url = urljoin(url, resp.headers["location"])
-                    continue
-                resp.raise_for_status()
-                return resp.text
-        raise SSRFError(f"Too many redirects (> {_MAX_REDIRECTS}) fetching {url!r}")
+        return safe_get(url)
 
     def _enrich(self, listing: Listing) -> Listing:
         """Fetch the individual job page and extract a richer description."""
