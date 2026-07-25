@@ -1,8 +1,10 @@
 # jobscout
 
 An AI-assisted job-search pipeline. It scrapes job boards and feeds, scores each
-listing against **your** CV and goals using Claude, pushes the strong matches to a
-Notion board, and can draft a tailored application prep brief for any role.
+listing against **your** CV and goals using a configurable LLM (Gemini by default
+for bulk scoring; Claude via OpenRouter for deep analysis and prep), pushes the
+strong matches to a Notion board, and can draft a tailored application prep brief
+for any role.
 
 It's built to be personal but not personalised in code: what you want, what you're
 qualified for, and what you won't accept all come from your CV plus a few lines of
@@ -12,14 +14,15 @@ engineers of any level, and for non-engineering roles too.
 ## How it works
 
 ```
-sources ──▶ scan ──▶ score (Claude) ──▶ shortlist ──▶ Notion board ──▶ prep brief
+sources ──▶ scan ──▶ score (LLM) ──▶ shortlist ──▶ Notion board ──▶ prep brief
  (feeds/     (save    (fit 0–100 vs      (push above    (act on it:      (tailored,
   HTTP/       new      your profile)      threshold)     applied, etc.)   per-role)
   browser)    jobs)
 ```
 
 1. **Profile** — your CV (PDF/Markdown) + a goals blurb are distilled into a
-   structured profile (skills, seniority, must-haves, dealbreakers) by Claude.
+   structured profile (skills, seniority, must-haves, dealbreakers) by an LLM
+   (the `prep_model` route — Claude Sonnet via OpenRouter by default).
 2. **Scan** — each configured source is scraped; new listings are saved to a local
    SQLite database and bulk-scored against your profile.
 3. **Score** — every listing gets a 0–100 fit score with a breakdown, rationale, and
@@ -46,7 +49,9 @@ playwright install chromium   # only needed for browser-type sources
 
 ```bash
 jobscout init                 # scaffold config.toml from the example
-# edit config.toml: set your CV path, goals, API key, and sources
+# edit config.toml: set your CV path, goals, API keys, and sources
+# (see [ai] section in config.example.toml — defaults need GEMINI_API_KEY
+#  and OPEN_ROUTER_API_KEY; Notion board also needs NOTION_TOKEN)
 jobscout profile              # build your candidate profile from CV + goals
 jobscout scan                 # scrape sources and score new listings
 jobscout list                 # see ranked matches in the terminal
@@ -123,7 +128,9 @@ private by default that those services don't already see:
 
 - **Your CV, goals, and derived candidate profile** (`candidate_profile.json`) are
   sent to whichever LLM providers your `[ai]` routes point at — OpenRouter,
-  Requesty, Google, or Anthropic — on every profile build, scoring run, and prep.
+  Requesty, Google, or Anthropic — on **profile build** and **prep**. The default
+  gated scoring run (`scan` / `rescore`) sends only the listing text plus a gate
+  schema — **not** your profile — to the bulk model on every listing.
 - **Every scraped listing's full text** (title, company, description) is sent to
   those same providers for scoring, and again for `prep` briefs.
 - **Strong matches are written to your Notion workspace**: title, company, score,
@@ -152,7 +159,9 @@ ruff check jobscout/
 ```
 
 `requirements.lock` pins the exact versions this project is tested against
-(`pip install -r requirements.lock`); `pyproject.toml` holds the loose ranges.
+(`pip install -r requirements.lock` installs deps only — the editable install
+`pip install -e .` is still required to get the `jobscout` CLI on your path);
+`pyproject.toml` holds the loose ranges.
 
 ## License
 
