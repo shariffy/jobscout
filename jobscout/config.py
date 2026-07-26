@@ -7,7 +7,7 @@ import stat
 import sys
 import tomllib
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -88,7 +88,6 @@ class SourceConfig(BaseModel):
     pages: int = 1
     page_param: str = ""
     page_size: int = 10
-    extra: dict[str, Any] = Field(default_factory=dict)
 
 
 class Config(BaseModel):

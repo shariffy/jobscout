@@ -4,8 +4,6 @@ import json
 import os
 import sqlite3
 import threading
-from collections.abc import Generator
-from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -271,15 +269,6 @@ class Store:
         if self._conn is None:
             raise RuntimeError("Store is not connected — use as context manager or call connect()")
         return self._conn
-
-    @contextmanager
-    def transaction(self) -> Generator[None, None, None]:
-        try:
-            yield
-            self.conn.commit()
-        except Exception:
-            self.conn.rollback()
-            raise
 
     # --- listings ---
 

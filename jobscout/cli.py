@@ -21,7 +21,7 @@ def _load(config: str | None):
     return load_config(config)
 
 
-def _verdict(score, cfg=None) -> str:
+def _verdict(score) -> str:
     """One-line rich markup: APPLY + tier, or NO (+ failed gates)."""
     if score.decision == "apply":
         tier = f" {score.tier_label}" if score.tier_label not in ("", "none") else ""
@@ -207,7 +207,7 @@ def scan(
             # write and console print are serialised and safe.
             store.insert_score(score)
             scored += 1
-            console.print(f"  {_verdict(score, cfg)}  {listing.title} @ {listing.company}")
+            console.print(f"  {_verdict(score)}  {listing.title} @ {listing.company}")
 
         map_bounded(new_listings, scorer.score, _on_scored,
                     max_workers=cfg.ai.scorer_concurrency)
@@ -481,7 +481,7 @@ def rescore(
                 store.update_listing_description(listing.id, result["enriched_desc"])
             score = result["score"]
             store.insert_score(score)
-            console.print(f"  {_verdict(score, cfg)}  {listing.title} @ {listing.company}")
+            console.print(f"  {_verdict(score)}  {listing.title} @ {listing.company}")
             if score.rationale:
                 console.print(f"       [dim]{score.rationale}[/]")
             app_row = store.get_application(listing.id)
@@ -734,7 +734,7 @@ def watch(
                         store.insert_score(score)
                         ns.update_score(page_id, score)
                         ns.reset_action(page_id)
-                        console.print(f"    [dim]rescored → {_verdict(score, cfg)}[/]")
+                        console.print(f"    [dim]rescored → {_verdict(score)}[/]")
 
                     elif action == "Prep":
                         profile_obj = build_profile(cfg)
