@@ -16,13 +16,9 @@ dependencies = [
     "playwright>=1.50.0",
     "typer>=0.15.0",
     "pydantic>=2.10.0",
-    "pydantic-settings>=2.7.0",
     "feedparser>=6.0.0",
-    "python-dateutil>=2.9.0",
     "pypdf>=5.0.0",
-    "notion-client>=2.3.0",
     "rich>=13.9.0",
-    "tomli>=2.2.0; python_version < '3.11'",
 ]
 
 [project.optional-dependencies]
