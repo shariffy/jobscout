@@ -51,7 +51,6 @@ class Score(BaseModel):
     listing_id: int
     rationale: str
     flags: list[str] = Field(default_factory=list)
-    breakdown: dict[str, int] = Field(default_factory=dict)
     model: str
     tier: str  # "bulk" | "deep"
     decision: str = ""  # "apply" | "no" | "" (legacy unscored-under-gated row)
@@ -72,9 +71,7 @@ class Application(BaseModel):
     applied_at: datetime | None = None
     chase_at: datetime | None = None
     notes: str = ""
-    contacts: str = ""
     notion_page_id: str = ""
-    prep_content: str = ""
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 

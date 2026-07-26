@@ -370,14 +370,13 @@ class Store:
         decision = score.decision or "no"
         self.conn.execute(
             """
-            INSERT INTO scores (listing_id, rationale, flags, breakdown, model, tier,
+            INSERT INTO scores (listing_id, rationale, flags, model, tier,
                                 decision, priority, tier_label, gate_results, assessment_version,
                                 scored_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(listing_id) DO UPDATE SET
                 rationale=excluded.rationale,
                 flags=excluded.flags,
-                breakdown=excluded.breakdown,
                 model=excluded.model,
                 tier=excluded.tier,
                 decision=excluded.decision,
@@ -391,7 +390,6 @@ class Store:
                 score.listing_id,
                 score.rationale,
                 json.dumps(score.flags),
-                json.dumps(score.breakdown),
                 score.model,
                 score.tier,
                 decision,
@@ -479,7 +477,7 @@ class Store:
             self.conn.execute(
                 """
                 UPDATE applications SET status=?, applied_at=?, chase_at=?, notes=?,
-                    contacts=?, notion_page_id=?, prep_content=?, updated_at=?
+                    notion_page_id=?, updated_at=?
                 WHERE listing_id=?
                 """,
                 (
@@ -487,9 +485,7 @@ class Store:
                     _dt(app.applied_at),
                     _dt(app.chase_at),
                     app.notes,
-                    app.contacts,
                     app.notion_page_id,
-                    app.prep_content,
                     now,
                     app.listing_id,
                 ),
@@ -500,8 +496,8 @@ class Store:
         cur = self.conn.execute(
             """
             INSERT INTO applications
-                (listing_id, status, applied_at, chase_at, notes, contacts, notion_page_id, prep_content, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (listing_id, status, applied_at, chase_at, notes, notion_page_id, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 app.listing_id,
@@ -509,9 +505,7 @@ class Store:
                 _dt(app.applied_at),
                 _dt(app.chase_at),
                 app.notes,
-                app.contacts,
                 app.notion_page_id,
-                app.prep_content,
                 now,
             ),
         )
@@ -565,8 +559,8 @@ def _row_to_listing(row: sqlite3.Row) -> Listing:
 def _row_to_score(row: sqlite3.Row) -> Score:
     d = dict(row)
     d.pop("fit_score", None)
+    d.pop("breakdown", None)
     d["flags"] = json.loads(d.get("flags") or "[]")
-    d["breakdown"] = json.loads(d.get("breakdown") or "{}")
     d["gate_results"] = json.loads(d.get("gate_results") or "[]")
     d["decision"] = d.get("decision") or ""
     d["tier_label"] = d.get("tier_label") or ""

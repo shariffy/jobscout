@@ -201,7 +201,6 @@ class NotionSync:
         applied_at: datetime | None = None,
         chase_at: datetime | None = None,
         notes: str = "",
-        contacts: str = "",
     ) -> None:
         props: dict[str, Any] = {"Status": {"select": {"name": status}}}
         if applied_at:
@@ -210,8 +209,6 @@ class NotionSync:
             props["Chase"] = {"date": {"start": chase_at.date().isoformat()}}
         if notes:
             props["Notes"] = {"rich_text": _rt(notes)}
-        if contacts:
-            props["Contacts"] = {"rich_text": _rt(contacts)}
         self._patch(f"/pages/{page_id}", {"properties": props})
 
     def archive_page(self, page_id: str) -> None:

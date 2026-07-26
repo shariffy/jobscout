@@ -15,8 +15,8 @@ engineers of any level, and for non-engineering roles too.
 
 ```
 sources ──▶ scan ──▶ score (LLM) ──▶ shortlist ──▶ Notion board ──▶ prep brief
- (feeds/     (save    (fit 0–100 vs      (push above    (act on it:      (tailored,
-  HTTP/       new      your profile)      threshold)     applied, etc.)   per-role)
+ (feeds/     (save    (gated apply/no    (push apply-    (act on it:      (tailored,
+  HTTP/       new      + priority tier)   decision roles) applied, etc.)   per-role)
   browser)    jobs)
 ```
 
@@ -25,11 +25,12 @@ sources ──▶ scan ──▶ score (LLM) ──▶ shortlist ──▶ Notio
    (the `prep_model` route — Claude Sonnet via OpenRouter by default).
 2. **Scan** — each configured source is scraped; new listings are saved to a local
    SQLite database and bulk-scored against your profile.
-3. **Score** — every listing gets a 0–100 fit score with a breakdown, rationale, and
-   flags. The rubric's weights and thresholds are configurable (see [Scoring](#scoring)).
-4. **Shortlist / Notion** — roles above your fit threshold are pushed to a Notion
-   board you can work from. Actions you set in Notion (Mark as Applied, Not
-   Interested, Prep) are polled and executed by `watch`.
+3. **Score** — every listing gets a gated apply/no decision with a priority tier and
+   rationale. Configurable gate rules (dealbreakers, role requirements) hard-veto a
+   listing; anything that passes all gates is ranked by priority tier.
+4. **Shortlist / Notion** — apply-decision roles are pushed to a Notion board you can
+   work from. Actions you set in Notion (Mark as Applied, Not Interested, Prep) are
+   polled and executed by `watch`.
 5. **Prep** — generate a per-role prep brief (CV tweaks, cover-letter angles, likely
    interview questions, people to contact) that's appended to the Notion page.
 
