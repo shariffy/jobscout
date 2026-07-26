@@ -4,9 +4,8 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from jobscout.config import SourceConfig
 from jobscout.sources import http_source
-from jobscout.sources.http_source import HttpSource, SSRFError, _assert_safe_url, safe_get
+from jobscout.sources.http_source import SSRFError, _assert_safe_url, safe_get
 
 
 def _fake_getaddrinfo(mapping: dict[str, str]):
@@ -17,10 +16,6 @@ def _fake_getaddrinfo(mapping: dict[str, str]):
         return [(None, None, None, None, (ip, 0))]
 
     return fn
-
-
-def make_http_source(url: str) -> HttpSource:
-    return HttpSource(SourceConfig(name="t", type="http", url=url))
 
 
 # --- _assert_safe_url ---
@@ -94,7 +89,7 @@ def test_safe_get_rejects_cgnat_host(monkeypatch):
         safe_get("http://cgnat.example.com/x")
 
 
-# --- HttpSource._get follows redirects, checking every hop ---
+# --- safe_get follows redirects, checking every hop ---
 
 def test_get_rejects_redirect_to_private_address(monkeypatch):
     monkeypatch.setattr(
@@ -119,9 +114,8 @@ def test_get_rejects_redirect_to_private_address(monkeypatch):
         http_source.httpx, "Client", lambda **kwargs: real_client_cls(transport=transport)
     )
 
-    source = make_http_source("http://board.example.com/jobs")
     with pytest.raises(SSRFError):
-        source._get("http://board.example.com/jobs")
+        safe_get("http://board.example.com/jobs")
 
 
 def test_get_follows_safe_redirect(monkeypatch):
@@ -147,5 +141,4 @@ def test_get_follows_safe_redirect(monkeypatch):
         http_source.httpx, "Client", lambda **kwargs: real_client_cls(transport=transport)
     )
 
-    source = make_http_source("http://board.example.com/jobs")
-    assert source._get("http://board.example.com/jobs") == "ok"
+    assert safe_get("http://board.example.com/jobs") == "ok"

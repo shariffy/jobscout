@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from ..config import SourceConfig
-from .base import Source
 from .feed_source import FeedSource
 from .http_source import HttpSource
 
+if TYPE_CHECKING:
+    from .browser_source import BrowserSource
 
-def build_source(config: SourceConfig) -> Source:
+
+def build_source(config: SourceConfig) -> HttpSource | FeedSource | BrowserSource:
     if config.type == "http":
         return HttpSource(config)
     if config.type == "feed":
@@ -17,5 +21,7 @@ def build_source(config: SourceConfig) -> Source:
     raise ValueError(f"Unknown source type: {config.type!r}")
 
 
-def build_enabled_sources(configs: list[SourceConfig]) -> list[Source]:
+def build_enabled_sources(
+    configs: list[SourceConfig],
+) -> list[HttpSource | FeedSource | BrowserSource]:
     return [build_source(c) for c in configs if c.enabled]

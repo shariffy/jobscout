@@ -12,7 +12,7 @@ from bs4 import BeautifulSoup
 
 from ..config import SelectorConfig, SourceConfig
 from ..models import Listing
-from .base import make_absolute, normalise_text
+from .base import normalise_text
 
 _UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"  # noqa: E501
 _MAX_REDIRECTS = 5
@@ -20,10 +20,6 @@ _MAX_REDIRECTS = 5
 
 class SSRFError(ValueError):
     """A URL (or a redirect hop) points at a host we refuse to fetch."""
-
-
-def _is_disallowed_ip(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    return not addr.is_global
 
 
 def _assert_safe_url(url: str) -> None:
@@ -44,7 +40,7 @@ def _assert_safe_url(url: str) -> None:
         raise SSRFError(f"Could not resolve host {host!r}: {exc}") from exc
     for info in infos:
         ip = ipaddress.ip_address(info[4][0])
-        if _is_disallowed_ip(ip):
+        if not ip.is_global:
             raise SSRFError(
                 f"Refusing to fetch {url!r}: host {host!r} resolves to disallowed address {ip}"
             )
@@ -82,7 +78,7 @@ class HttpSource:
         for i, url in enumerate(page_urls(self._cfg)):
             if i:
                 time.sleep(0.5)  # be polite when paginating
-            page = self._parse(self._get(url), url)
+            page = self._parse(safe_get(url), url)
             if not page:
                 break  # empty page — end of results
             listings.extend(page)
@@ -90,13 +86,10 @@ class HttpSource:
             listings = [self._enrich(lst) for lst in listings]
         return listings
 
-    def _get(self, url: str) -> str:
-        return safe_get(url)
-
     def _enrich(self, listing: Listing) -> Listing:
         """Fetch the individual job page and extract a richer description."""
         try:
-            html = self._get(listing.url)
+            html = safe_get(listing.url)
         except Exception:
             return listing
         soup = BeautifulSoup(html, "html.parser")
@@ -147,7 +140,7 @@ def parse_listings(
         location = _text(el, sel.location)
         description = _text(el, sel.description)
         url = _attr(el, sel.url, "href")
-        url = make_absolute(url, base_url)
+        url = urljoin(base_url, url) if url else ""
 
         if not title or not url:
             continue
