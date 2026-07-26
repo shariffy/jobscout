@@ -443,9 +443,11 @@ tooling/kernel ceiling, not a capacity one.
 
 ## 9. Reproducing
 
-Production tooling (committed): `validate_gate.py` (ground-truth regression gate),
-`migrate_notion.py` (one-shot board migration). The additive-era `bakeoff.py`
-cross-provider harness was removed with `fit_score`.
+Production tooling (committed): `validate_gate.py` (ground-truth regression gate).
+`migrate_notion.py` (one-shot board migration) and `backfill_extraction_hashes.py`
+(extraction cache backfill) were removed once complete — their work is done and
+`NotionSync.update_schema()` now runs the Notion schema patch on every `watch()`.
+The additive-era `bakeoff.py` cross-provider harness was removed with `fit_score`.
 
 The exploratory analysis scripts behind §5 (`extraction_sweep.py`, `compare_scorers.py`,
 `scorecard_gated.py`, `deepseek_reasoning_probe.py`, `remeasure_office.py`) were one-off
