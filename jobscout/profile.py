@@ -8,6 +8,7 @@ from pypdf import PdfReader
 from .config import Config
 from .llm import resolve_route, with_retries
 from .models import CandidateProfile
+from .scoring import _parse_score
 from .store import _chmod_owner_only
 
 _CACHE_FILENAME = "candidate_profile.json"
@@ -76,18 +77,7 @@ def build_profile(cfg: Config, force: bool = False) -> CandidateProfile:
     # Reasoning models keep their thinking in a separate field; the answer is in
     # message.content.
     raw = ((response.choices[0].message.content or "") if response.choices else "").strip()
-    # Strip an accidental markdown fence, then decode the first JSON object,
-    # tolerating any trailing prose the model may append.
-    if raw.startswith("```"):
-        raw = raw.split("```", 2)[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-        raw = raw.strip()
-    start = raw.find("{")
-    if start != -1:
-        data, _ = json.JSONDecoder().raw_decode(raw[start:])
-    else:
-        data = json.loads(raw)
+    data = _parse_score(raw)
     # Inject raw goals if the model didn't copy them
     if not data.get("raw_goals") and goals:
         data["raw_goals"] = goals
