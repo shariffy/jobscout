@@ -45,7 +45,6 @@ CREATE TABLE IF NOT EXISTS scores (
     flags              TEXT    NOT NULL DEFAULT '[]',
     breakdown          TEXT    NOT NULL DEFAULT '{}',
     model              TEXT    NOT NULL,
-    tier               TEXT    NOT NULL,
     decision           TEXT    NOT NULL DEFAULT '',
     priority           INTEGER,
     tier_label         TEXT    NOT NULL DEFAULT '',
@@ -146,6 +145,14 @@ class Store:
         if self._scores_needs_rebuild() or "fit_score" in existing:
             self._rebuild_scores_table()
 
+        # Drop the legacy `tier` column ("bulk" | "deep"). The deep tier went away
+        # with the additive scorer, so every row carries the constant "bulk" — the
+        # gated pipeline ranks by decision + tier_label, which is a different field.
+        # A rebuild above already lands on the new shape, so this only fires for a
+        # DB that was current under the old schema.
+        if "tier" in {r["name"] for r in self.conn.execute("PRAGMA table_info(scores)")}:
+            self.conn.execute("ALTER TABLE scores DROP COLUMN tier")
+
         # Extraction cache: content fingerprint + real usage. Existing rows keep
         # text_hash='' and are backfilled from current listing text by
         # backfill_extraction_hashes.py so they aren't needlessly re-extracted.
@@ -214,7 +221,6 @@ class Store:
                     flags              TEXT    NOT NULL DEFAULT '[]',
                     breakdown          TEXT    NOT NULL DEFAULT '{}',
                     model              TEXT    NOT NULL,
-                    tier               TEXT    NOT NULL,
                     decision           TEXT    NOT NULL DEFAULT '',
                     priority           INTEGER,
                     tier_label         TEXT    NOT NULL DEFAULT '',
@@ -234,10 +240,10 @@ class Store:
             self.conn.execute(
                 """
                 INSERT INTO scores (id, listing_id, rationale, flags, breakdown,
-                                     model, tier, decision, priority, tier_label, gate_results,
+                                     model, decision, priority, tier_label, gate_results,
                                      assessment_version, scored_at)
                 SELECT id, listing_id, rationale, flags, breakdown,
-                       model, tier, COALESCE(decision, ''), priority,
+                       model, COALESCE(decision, ''), priority,
                        COALESCE(tier_label, ''), COALESCE(gate_results, '[]'),
                        COALESCE(assessment_version, ''), scored_at
                 FROM scores_old
@@ -323,7 +329,7 @@ class Store:
     def list_listings(self, apply_only: bool = False, limit: int = 100) -> list[dict]:
         """Return listings joined with their score, optionally apply-only."""
         sql = """
-            SELECT l.*, s.rationale, s.flags, s.tier,
+            SELECT l.*, s.rationale, s.flags,
                    s.decision, s.priority, s.tier_label
             FROM listings l
             LEFT JOIN scores s ON s.listing_id = l.id
@@ -359,15 +365,14 @@ class Store:
         decision = score.decision or "no"
         self.conn.execute(
             """
-            INSERT INTO scores (listing_id, rationale, flags, model, tier,
+            INSERT INTO scores (listing_id, rationale, flags, model,
                                 decision, priority, tier_label, gate_results, assessment_version,
                                 scored_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(listing_id) DO UPDATE SET
                 rationale=excluded.rationale,
                 flags=excluded.flags,
                 model=excluded.model,
-                tier=excluded.tier,
                 decision=excluded.decision,
                 priority=excluded.priority,
                 tier_label=excluded.tier_label,
@@ -380,7 +385,6 @@ class Store:
                 score.rationale,
                 json.dumps(score.flags),
                 score.model,
-                score.tier,
                 decision,
                 score.priority,
                 score.tier_label,

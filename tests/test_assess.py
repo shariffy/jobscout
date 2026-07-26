@@ -504,7 +504,6 @@ def test_gated_scorer_score(mock_openai_cls):
     assert score.tier_label == "T1"
     assert score.priority is not None
     assert score.decision == "apply"
-    assert score.tier == "bulk"
     assert len(score.gate_results) == 5
     # no_blocked_stack passed; office unknown flagged but on_unknown=pass_flag
     assert score.priority == 0

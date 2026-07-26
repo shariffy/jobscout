@@ -557,7 +557,6 @@ class GatedScorer:
             rationale=a.rationale,
             flags=a.flags,
             model=self._cfg.ai.bulk_model,
-            tier="bulk",
             decision=a.decision,
             priority=a.priority,
             tier_label=a.tier_label,

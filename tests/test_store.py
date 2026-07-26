@@ -79,7 +79,6 @@ def test_score_round_trip(store):
         rationale="Strong match on Python and product experience.",
         flags=["remote-friendly", "series-b"],
         model="claude-haiku-4-5",
-        tier="bulk",
         decision="apply",
         priority=12,
         tier_label="T1",
@@ -99,7 +98,7 @@ def test_unscored_listings(store):
     b, _ = store.upsert_listing(make_listing(url="https://example.com/jobs/2", title="Role B"))
 
     store.insert_score(Score(
-        listing_id=a.id, rationale="ok", model="haiku", tier="bulk", decision="apply",
+        listing_id=a.id, rationale="ok", model="haiku", decision="apply",
     ))
 
     unscored = store.unscored_listings()
@@ -131,10 +130,10 @@ def test_list_listings_apply_only(store):
     b, _ = store.upsert_listing(make_listing(url="https://example.com/2", title="Apply me"))
 
     store.insert_score(Score(
-        listing_id=a.id, rationale="weak", model="haiku", tier="bulk", decision="no",
+        listing_id=a.id, rationale="weak", model="haiku", decision="no",
     ))
     store.insert_score(Score(
-        listing_id=b.id, rationale="strong", model="haiku", tier="bulk",
+        listing_id=b.id, rationale="strong", model="haiku",
         decision="apply", priority=10, tier_label="T1",
     ))
 
@@ -149,7 +148,7 @@ def test_gated_score_round_trip(store):
                      "evidence": "2 days/week", "confidence": 1.0}]
     score = Score(
         listing_id=listing.id, rationale="APPLY T1", flags=[],
-        model="test/model", tier="bulk",
+        model="test/model",
         decision="apply", priority=2, tier_label="T1", gate_results=gate_results,
     )
     store.insert_score(score)
@@ -164,7 +163,7 @@ def test_gated_score_round_trip(store):
 def test_insert_score_defaults_empty_decision_to_no(store):
     listing, _ = store.upsert_listing(make_listing())
     saved = store.insert_score(Score(
-        listing_id=listing.id, rationale="", model="m", tier="bulk",
+        listing_id=listing.id, rationale="", model="m",
     ))
     assert saved.decision == "no"
 
@@ -202,6 +201,7 @@ def test_migration_drops_fit_and_backfills_decision(tmp_path):
     with Store(db) as s:
         cols = {r["name"] for r in s.conn.execute("PRAGMA table_info(scores)")}
         assert "fit_score" not in cols
+        assert "tier" not in cols
         rows = s.conn.execute("SELECT decision, rationale FROM scores").fetchall()
         assert len(rows) == 1
         assert rows[0]["decision"] == "apply"
@@ -246,10 +246,56 @@ def test_migration_adds_cascade_and_unique_constraint(tmp_path):
         assert "fit_score" not in cols
 
 
+def test_migration_drops_legacy_tier_column(tmp_path):
+    """A DB already on the gated schema (CASCADE + UNIQUE, no fit_score) but still
+    carrying the dead `tier` column gets it dropped on open — without touching
+    tier_label, which is a different field, or losing any row data."""
+    import sqlite3
+
+    db = tmp_path / "with_tier.db"
+    conn = sqlite3.connect(db)
+    conn.executescript("""
+        CREATE TABLE listings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, hash TEXT NOT NULL UNIQUE,
+            source_name TEXT NOT NULL, title TEXT NOT NULL, company TEXT NOT NULL,
+            location TEXT NOT NULL DEFAULT '', url TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '', raw TEXT NOT NULL DEFAULT '{}',
+            fetched_at TEXT NOT NULL
+        );
+        CREATE TABLE scores (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            listing_id INTEGER NOT NULL UNIQUE REFERENCES listings(id) ON DELETE CASCADE,
+            rationale TEXT NOT NULL DEFAULT '', flags TEXT NOT NULL DEFAULT '[]',
+            breakdown TEXT NOT NULL DEFAULT '{}', model TEXT NOT NULL,
+            tier TEXT NOT NULL, decision TEXT NOT NULL DEFAULT '',
+            priority INTEGER, tier_label TEXT NOT NULL DEFAULT '',
+            gate_results TEXT NOT NULL DEFAULT '[]',
+            assessment_version TEXT NOT NULL DEFAULT '', scored_at TEXT NOT NULL
+        );
+        INSERT INTO listings (hash, source_name, title, company, url, fetched_at)
+            VALUES ('h1', 's', 'Role', 'Co', 'https://x.test/1', '2026-01-01T00:00:00+00:00');
+        INSERT INTO scores (listing_id, rationale, model, tier, decision, priority,
+                            tier_label, scored_at)
+            VALUES (1, 'why', 'm', 'bulk', 'apply', 7, 'T2', '2026-01-01T00:00:00+00:00');
+    """)
+    conn.commit()
+    conn.close()
+
+    with Store(db) as s:
+        cols = {r["name"] for r in s.conn.execute("PRAGMA table_info(scores)")}
+        assert "tier" not in cols
+        assert "tier_label" in cols
+        best = s.get_best_score(1)
+        assert best.decision == "apply"
+        assert best.priority == 7
+        assert best.tier_label == "T2"
+        assert best.rationale == "why"
+
+
 def test_score_cascade_deletes_with_listing(store):
     listing, _ = store.upsert_listing(make_listing())
     store.insert_score(Score(
-        listing_id=listing.id, rationale="", model="m", tier="bulk", decision="apply",
+        listing_id=listing.id, rationale="", model="m", decision="apply",
     ))
 
     store.conn.execute("DELETE FROM listings WHERE id = ?", (listing.id,))
@@ -265,10 +311,10 @@ def test_score_cascade_deletes_with_listing(store):
 def test_insert_score_upserts_one_row_per_listing(store):
     listing, _ = store.upsert_listing(make_listing())
     store.insert_score(Score(
-        listing_id=listing.id, rationale="first", model="m", tier="bulk", decision="no",
+        listing_id=listing.id, rationale="first", model="m", decision="no",
     ))
     store.insert_score(Score(
-        listing_id=listing.id, rationale="second", model="m", tier="bulk",
+        listing_id=listing.id, rationale="second", model="m",
         decision="apply", priority=5, tier_label="T2",
     ))
 
@@ -311,7 +357,7 @@ def test_update_listing_description(store):
 def test_score_round_trip_includes_assessment_version(store):
     listing, _ = store.upsert_listing(make_listing())
     store.insert_score(Score(
-        listing_id=listing.id, rationale="", model="m", tier="bulk",
+        listing_id=listing.id, rationale="", model="m",
         decision="apply", assessment_version="abc123",
     ))
     best = store.get_best_score(listing.id)

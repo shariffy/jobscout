@@ -52,7 +52,6 @@ class Score(BaseModel):
     rationale: str
     flags: list[str] = Field(default_factory=list)
     model: str
-    tier: str  # "bulk" | "deep"
     decision: str = ""  # "apply" | "no" | "" (legacy unscored-under-gated row)
     priority: int | None = None  # sort key within the apply set; lower = do first
     tier_label: str = ""  # "T1".."T4" | "none" | "" (distinct from bulk/deep tier)
