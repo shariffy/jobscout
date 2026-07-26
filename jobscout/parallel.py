@@ -65,28 +65,3 @@ def _deliver(
         on_result(i, total, item, result, None)
 
 
-def score_batch_parallel(scorer, listings, *, max_workers, progress_cb=None):
-    """Parallel drop-in for a serial score loop: score every listing (<= max_workers
-    at once) and return the Scores in INPUT order. progress_cb(done, total, listing,
-    score), when given, fires on the calling thread as each finishes (completion
-    order). Unlike the CLI paths, this preserves the old contract of propagating the
-    first scoring error rather than reporting it per-item.
-    """
-    listings = list(listings)
-    results: dict = {}
-
-    def on_result(done, total, indexed, score, error):
-        idx, listing = indexed
-        if error is not None:
-            raise error
-        results[idx] = score
-        if progress_cb:
-            progress_cb(done, total, listing, score)
-
-    map_bounded(
-        list(enumerate(listings)),
-        lambda pair: scorer.score(pair[1]),
-        on_result,
-        max_workers=max_workers,
-    )
-    return [results[i] for i in range(len(listings))]

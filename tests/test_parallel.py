@@ -2,9 +2,7 @@
 import threading
 import time
 
-import pytest
-
-from jobscout.parallel import map_bounded, score_batch_parallel
+from jobscout.parallel import map_bounded
 
 
 def test_map_bounded_delivers_all_results():
@@ -70,36 +68,3 @@ def test_map_bounded_empty_is_noop():
     assert calls == []
 
 
-class _FakeScorer:
-    def __init__(self):
-        self.lock = threading.Lock()
-
-    def score(self, listing):
-        return f"score({listing})"
-
-
-def test_score_batch_parallel_preserves_input_order():
-    scorer = _FakeScorer()
-    out = score_batch_parallel(scorer, ["a", "b", "c", "d"], max_workers=4)
-    assert out == ["score(a)", "score(b)", "score(c)", "score(d)"]
-
-
-def test_score_batch_parallel_progress_fires_per_item():
-    scorer = _FakeScorer()
-    progress = []
-    score_batch_parallel(
-        scorer, ["a", "b"], max_workers=2,
-        progress_cb=lambda done, total, listing, score: progress.append((done, total)),
-    )
-    assert sorted(progress) == [(1, 2), (2, 2)]
-
-
-def test_score_batch_parallel_propagates_scoring_error():
-    class Boom:
-        def score(self, listing):
-            if listing == "b":
-                raise RuntimeError("nope")
-            return listing
-
-    with pytest.raises(RuntimeError, match="nope"):
-        score_batch_parallel(Boom(), ["a", "b", "c"], max_workers=1)

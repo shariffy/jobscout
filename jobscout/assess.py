@@ -566,16 +566,6 @@ class GatedScorer:
             scored_at=datetime.now(UTC),
         )
 
-    def score_batch(self, listings: list[Listing], progress_cb=None) -> list[Score]:
-        from .parallel import score_batch_parallel
-
-        return score_batch_parallel(
-            self, listings,
-            max_workers=max(1, self._cfg.ai.scorer_concurrency),
-            progress_cb=progress_cb,
-        )
-
-
 def build_scorer(cfg: Config, profile: CandidateProfile, store: Store | None = None):
     """Return the gated Score producer.
 
