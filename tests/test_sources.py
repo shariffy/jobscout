@@ -2,7 +2,6 @@
 from pathlib import Path
 
 import feedparser
-import pytest
 
 from jobscout.config import SelectorConfig, SourceConfig
 from jobscout.sources.feed_source import FeedSource
@@ -82,7 +81,7 @@ def test_http_source_name():
     html = (FIXTURES / "jobs.html").read_text()
     listings = make_http_source(name="MyBoard").parse_html(html, "https://example.com")
 
-    assert all(l.source_name == "MyBoard" for l in listings)
+    assert all(lst.source_name == "MyBoard" for lst in listings)
 
 
 def test_http_listing_hash_stable():
@@ -98,7 +97,7 @@ def test_http_listings_have_unique_hashes():
     html = (FIXTURES / "jobs.html").read_text()
     listings = make_http_source().parse_html(html, "https://example.com")
 
-    hashes = [l.hash for l in listings]
+    hashes = [lst.hash for lst in listings]
     assert len(set(hashes)) == len(hashes)
 
 
@@ -150,4 +149,4 @@ def test_feed_source_name():
     feed = feedparser.parse(xml)
     listings = make_feed_source(name="HN Feed").parse_feed(feed)
 
-    assert all(l.source_name == "HN Feed" for l in listings)
+    assert all(lst.source_name == "HN Feed" for lst in listings)

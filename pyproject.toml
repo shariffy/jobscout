@@ -46,6 +46,9 @@ select = ["E", "F", "I", "UP"]
 "jobscout/store.py" = ["E501"]
 "jobscout/cli.py" = ["E501"]
 "jobscout/models.py" = ["E501"]
+# Gate rules and the verbatim evidence quotes the extractor is asserted against —
+# rewrapping them would change the strings under test.
+"tests/test_assess.py" = ["E501"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

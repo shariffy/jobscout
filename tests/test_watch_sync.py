@@ -30,7 +30,9 @@ def make_listing(**kwargs) -> Listing:
 
 def seed(store, status="shortlisted", page_id="p1") -> Listing:
     listing, _ = store.upsert_listing(make_listing())
-    store.upsert_application(Application(listing_id=listing.id, status=status, notion_page_id=page_id))
+    store.upsert_application(
+        Application(listing_id=listing.id, status=status, notion_page_id=page_id)
+    )
     return listing
 
 

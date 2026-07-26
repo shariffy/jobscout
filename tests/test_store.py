@@ -118,7 +118,9 @@ def test_application_upsert(store):
     assert fetched.status == "applied"
     assert fetched.notes == "Applied via referral."
 
-    updated = Application(listing_id=listing.id, status="interviewing", notes="Phone screen booked.")
+    updated = Application(
+        listing_id=listing.id, status="interviewing", notes="Phone screen booked."
+    )
     store.upsert_application(updated)
     refetched = store.get_application(listing.id)
     assert refetched.status == "interviewing"
@@ -282,7 +284,9 @@ def test_upsert_listing_refreshes_richer_description(store):
     a, is_new = store.upsert_listing(make_listing(description="short"))
     assert is_new is True
 
-    b, is_new2 = store.upsert_listing(make_listing(description="a much longer and richer description"))
+    b, is_new2 = store.upsert_listing(
+        make_listing(description="a much longer and richer description")
+    )
     assert is_new2 is False
     assert b.id == a.id
 
